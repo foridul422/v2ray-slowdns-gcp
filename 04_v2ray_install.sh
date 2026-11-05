@@ -21,16 +21,32 @@ banner() {
 
 banner "Phase 3: Creating GCP VM & Installing Server"
 
-# ── 1. Detect Allowed Zones ─────────────────────────────────
+# ── 1. Detect Singapore (SG) & Project Allowed Zones ────────
 DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
 [[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
 
-CANDIDATE_ZONES=()
+META_ZONE=$(gcloud compute project-info describe --project="$PROJECT_ID" \
+    --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null || true)
+META_REGION=$(gcloud compute project-info describe --project="$PROJECT_ID" \
+    --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null || true)
+
+CANDIDATE_ZONES=(
+    # 1. Singapore (SG) zones first for lowest latency
+    "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
+    # 2. Other Asia zones (Mumbai, Taiwan, Tokyo)
+    "asia-south1-a" "asia-south1-b" "asia-east1-a" "asia-northeast1-a"
+)
+
+# 3. Project default zone/region (important if Qwiklabs restricts region)
 [[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
+[[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
+[[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
+
+# 4. Fallback US & Europe zones if Asia is restricted by project policy
 CANDIDATE_ZONES+=(
     "us-central1-a" "us-central1-b" "us-central1-c" "us-central1-f"
     "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b"
-    "asia-south1-a" "asia-southeast1-a" "europe-west1-b"
+    "europe-west1-b" "europe-west4-a"
 )
 
 TARGET_ZONES=()
@@ -54,8 +70,9 @@ if [[ -n "$EXISTING_INFO" ]]; then
     CREATED_IP=""
 fi
 
+LAST_ERR=""
 for ZONE in "${TARGET_ZONES[@]}"; do
-    info "Trying zone: $ZONE..."
+    info "Trying zone: ${BOLD}$ZONE${NC}..."
     for TYPE in "e2-medium" "e2-small" "e2-micro"; do
         OUT=$(gcloud compute instances create "$VM_NAME" \
             --project="$PROJECT_ID" \
@@ -77,6 +94,14 @@ for ZONE in "${TARGET_ZONES[@]}"; do
             break 2
         fi
 
+        LAST_ERR=$(echo "$OUT" | grep -Ei "ERROR|quota|policy|denied|disabled|not found" | head -n 1 || true)
+
+        # If Compute Engine API is not enabled or permission denied for whole project, stop immediately
+        if echo "$OUT" | grep -qiE "API \[compute.googleapis.com\] not enabled|compute.instances.create.*denied|billing"; then
+            warn "Project restriction: $LAST_ERR"
+            break 2
+        fi
+
         if ! echo "$OUT" | grep -qiE "quota|exceeded"; then
             break
         fi
@@ -84,7 +109,9 @@ for ZONE in "${TARGET_ZONES[@]}"; do
 done
 
 if [[ -z "$CREATED_IP" ]]; then
-    err "GCP VM তৈরি করা যায়নি! Quota বা Permission চেক করো।"
+    echo ""
+    warn "সর্বশেষ এরর: ${LAST_ERR:-Unknown error}"
+    err "এই GCP প্রজেক্টে ($PROJECT_ID) VM তৈরি করার পারমিশন নেই অথবা রিজিয়ন লক করা।"
 fi
 
 {
