@@ -54,15 +54,15 @@ if [[ -n "$EXISTING_VM_LINE" ]]; then
             --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
             --metadata-from-file=startup-script=/tmp/slowdns-startup.sh --quiet 2>/dev/null || true
 
-        # Copy and run startup script directly over SSH in background
+        # Pipe and run startup script directly over SSH (or reset VM so startup-script metadata runs)
         (
-            gcloud compute scp --quiet --strict-host-key-checking=no \
-                --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
-                /tmp/slowdns-startup.sh "${ACTIVE_VM_NAME}:/tmp/slowdns-startup.sh" >/dev/null 2>&1 || true
-            gcloud compute ssh "$ACTIVE_VM_NAME" \
+            if ! gcloud compute ssh "$ACTIVE_VM_NAME" \
                 --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
                 --strict-host-key-checking=no --quiet \
-                --command="sudo rm -f /usr/local/bin/dnstt-server && sudo bash /tmp/slowdns-startup.sh" >/dev/null 2>&1 || true
+                --command="sudo tee /tmp/slowdns-startup.sh >/dev/null && sudo rm -f /usr/local/bin/dnstt-server && sudo bash /tmp/slowdns-startup.sh" < /tmp/slowdns-startup.sh >/dev/null 2>&1; then
+                gcloud compute instances reset "$ACTIVE_VM_NAME" \
+                    --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" --quiet >/dev/null 2>&1 || true
+            fi
         ) &
     fi
 fi

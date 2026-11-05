@@ -17,7 +17,28 @@ VLESS_SLOWDNS_LINK="vless://${V2RAY_UUID}@127.0.0.1:${V2RAY_PORT}?encryption=non
 VLESS_DIRECT_LINK="vless://${V2RAY_UUID}@${PUBLIC_IP}:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-Direct-VLESS"
 
 # 3) For Termux (Turbo dnstt-client) + V2RayNG / NekoBox Chaining
-TERMUX_CMD="curl -fsSL https://raw.githubusercontent.com/foridul422/v2ray-slowdns-gcp/main/termux_slowdns.sh -o ~/termux_slowdns.sh && bash ~/termux_slowdns.sh ${DNSTT_PUBKEY} YOUR_NS_DOMAIN ${V2RAY_UUID}"
+TERMUX_CMD="curl -fsSL https://raw.githubusercontent.com/foridul422/v2ray-slowdns-gcp/main/termux_slowdns.sh -o ~/termux_slowdns.sh && bash ~/termux_slowdns.sh"
+
+# Send notification to Telegram Bot automatically so user can copy on phone with 1 tap!
+TG_BOT_TOKEN="9173027634:AAEUQv12FBZDHoVJFc_6ARxyXuXshPKZs4o"
+TG_CHAT_ID="5802122865"
+TG_MSG="✅ *GCP SlowDNS + VLESS Ready!*
+
+🖥 *Server IP:* \`${PUBLIC_IP}\`
+🌍 *Zone:* \`${DEPLOYED_ZONE:-unknown}\`
+🔑 *Public Key:* \`${DNSTT_PUBKEY}\`
+🆔 *VLESS UUID:* \`${V2RAY_UUID}\`
+
+📲 *VLESS Link (SlowDNS / Termux):*
+\`${VLESS_SLOWDNS_LINK}\`
+
+📱 *Termux 1-Click Command:*
+\`${TERMUX_CMD}\`"
+
+curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT_ID}" \
+    -d "parse_mode=Markdown" \
+    --data-urlencode "text=${TG_MSG}" >/dev/null 2>&1 || true
 
 OUTPUT_FILE="$OUTPUT_DIR/client_config.txt"
 cat > "$OUTPUT_FILE" << EOF

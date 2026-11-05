@@ -467,34 +467,39 @@ PY_EOF
 fi
 
 # ── 3. Load or Prompt Configuration ─────────────────────────────────────────
+DEFAULT_PUBKEY="58a0eeb51c71ad9fe39997ded7cf4e1f9700d497edd47af5c2c42a66611bc34c"
+DEFAULT_DOMAIN="tunnel2.foridul.pp.ua"
+DEFAULT_UUID="60c44ed2-4dd4-43ab-9a66-a0b40623a1d4"
+
 if [[ -f "$CONF_FILE" ]]; then
     source "$CONF_FILE"
 fi
 
-# CLI args override: bash termux_slowdns.sh <PUBKEY> <TUNNEL_DOMAIN> [VLESS_UUID] [DNS_TARGET] [LOCAL_PORT]
-[[ -n "${1:-}" ]] && PUBKEY="$1"
-[[ -n "${2:-}" ]] && TUNNEL_DOMAIN="$2"
+# CLI args override: bash termux_slowdns.sh [TUNNEL_DOMAIN] [PUBKEY] [VLESS_UUID] [DNS_TARGET] [LOCAL_PORT]
+if [[ -n "${1:-}" ]]; then
+    if [[ ${#1} -eq 64 && "$1" != *.* ]]; then
+        PUBKEY="$1"
+        [[ -n "${2:-}" ]] && TUNNEL_DOMAIN="$2"
+    else
+        TUNNEL_DOMAIN="$1"
+        [[ -n "${2:-}" ]] && PUBKEY="$2"
+    fi
+fi
 [[ -n "${3:-}" ]] && VLESS_UUID="$3"
 [[ -n "${4:-}" ]] && DNS_TARGET="$4"
 [[ -n "${5:-}" ]] && LOCAL_PORT="$5"
 
-if [[ -z "${PUBKEY:-}" ]]; then
-    echo -ne "${YELLOW}🔑 SlowDNS Public Key (64 hex): ${NC}"
-    read -r PUBKEY
-fi
-PUBKEY=$(echo "$PUBKEY" | tr -d '[:space:]')
+PUBKEY="${PUBKEY:-$DEFAULT_PUBKEY}"
+VLESS_UUID="${VLESS_UUID:-$DEFAULT_UUID}"
 
 if [[ -z "${TUNNEL_DOMAIN:-}" ]]; then
-    echo -ne "${YELLOW}🌐 Tunnel NS Domain (e.g. tunnel2.foridul.pp.ua): ${NC}"
-    read -r TUNNEL_DOMAIN
+    echo -ne "${YELLOW}🌐 Tunnel NS Domain [Default: $DEFAULT_DOMAIN]: ${NC}"
+    read -r INPUT_DOMAIN
+    TUNNEL_DOMAIN="${INPUT_DOMAIN:-$DEFAULT_DOMAIN}"
 fi
 TUNNEL_DOMAIN=$(echo "$TUNNEL_DOMAIN" | tr -d '[:space:]')
-
-if [[ -z "${VLESS_UUID:-}" ]]; then
-    echo -ne "${YELLOW}🆔 VLESS UUID (optional, press Enter to skip): ${NC}"
-    read -r VLESS_UUID
-fi
-VLESS_UUID=$(echo "${VLESS_UUID:-}" | tr -d '[:space:]')
+PUBKEY=$(echo "$PUBKEY" | tr -d '[:space:]')
+VLESS_UUID=$(echo "$VLESS_UUID" | tr -d '[:space:]')
 
 if [[ -z "${DNS_TARGET:-}" ]]; then
     echo ""

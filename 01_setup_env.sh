@@ -79,35 +79,25 @@ fi
 gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
 log "GCP Project ID: ${BOLD}$PROJECT_ID${NC}"
 
-# ── 2. Generate dnstt Keys & VLESS UUID ─────────────────────
-banner "Generating SlowDNS Keys & VLESS UUID"
+# ── 2. Fixed Permanent dnstt Keys & VLESS UUID (No need to copy every time!) ──
+banner "Setting Permanent SlowDNS Keys & VLESS UUID"
 
 PRIV_FILE="$KEYS_DIR/server.key"
 PUB_FILE="$KEYS_DIR/server.pub"
 UUID_FILE="$KEYS_DIR/vless.uuid"
 
-if [[ -s "$PRIV_FILE" && -s "$PUB_FILE" ]]; then
-    DNSTT_PRIVKEY=$(tr -d '[:space:]' < "$PRIV_FILE")
-    DNSTT_PUBKEY=$(tr -d '[:space:]' < "$PUB_FILE")
-    log "Reusing existing SlowDNS Keypair ✓"
-else
-    PEM=$(openssl genpkey -algorithm X25519 2>/dev/null)
-    DNSTT_PRIVKEY=$(echo "$PEM" | openssl pkey -outform DER 2>/dev/null | tail -c 32 | od -An -tx1 | tr -d ' \n')
-    DNSTT_PUBKEY=$(echo "$PEM" | openssl pkey -pubout -outform DER 2>/dev/null | tail -c 32 | od -An -tx1 | tr -d ' \n')
-    echo "$DNSTT_PRIVKEY" > "$PRIV_FILE"
-    echo "$DNSTT_PUBKEY" > "$PUB_FILE"
-    chmod 600 "$PRIV_FILE"
-    log "Generated new X25519 SlowDNS Keypair ✓"
-fi
-log "Public Key : ${BOLD}$DNSTT_PUBKEY${NC}"
-
-if [[ -s "$UUID_FILE" ]]; then
-    V2RAY_UUID=$(tr -d '[:space:]' < "$UUID_FILE")
-else
-    V2RAY_UUID=$(cat /proc/sys/kernel/random/uuid)
-    echo "$V2RAY_UUID" > "$UUID_FILE"
-fi
+# Permanent X25519 keypair & UUID so V2RayNG / NekoBox / Termux config NEVER changes across VMs!
+DNSTT_PRIVKEY="8495481fe11a602c664c4b923dc115437507022f4bd4bef890e08ba3dcfe7659"
+DNSTT_PUBKEY="58a0eeb51c71ad9fe39997ded7cf4e1f9700d497edd47af5c2c42a66611bc34c"
+V2RAY_UUID="60c44ed2-4dd4-43ab-9a66-a0b40623a1d4"
 V2RAY_PORT=10086
+
+echo "$DNSTT_PRIVKEY" > "$PRIV_FILE"
+echo "$DNSTT_PUBKEY" > "$PUB_FILE"
+echo "$V2RAY_UUID" > "$UUID_FILE"
+chmod 600 "$PRIV_FILE"
+
+log "Public Key : ${BOLD}$DNSTT_PUBKEY${NC}"
 log "VLESS UUID : ${BOLD}$V2RAY_UUID${NC}"
 
 # ── 3. Save env config (NO domain yet!) ─────────────────────
