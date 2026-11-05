@@ -80,7 +80,7 @@ if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-se
 
     echo "[*] Applying TurboTunnel high-speed & universal-domain patches..."
     sed -i 's/const QueueSize = 128/const QueueSize = 2048/g' "$SRC_DIR/turbotunnel/consts.go"
-    sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 50 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
+    sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 100 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
     sed -i 's/ch := make(chan \*record, 100)/ch := make(chan \*record, 10000)/g' "$SRC_DIR/dnstt-server/main.go"
     sed -i 's/maxUDPPayload = 1280 - 40 - 8/maxUDPPayload = 512/g' "$SRC_DIR/dnstt-server/main.go"
 
@@ -90,9 +90,18 @@ p = sys.argv[1]
 with open(p, "r") as f:
     code = f.read()
 
-# 1. Universal domain-agnostic prefix extraction
-target = "\tprefix, ok := question.Name.TrimSuffix(domain)"
-replacement = """\tprefix, ok := question.Name.TrimSuffix(domain)
+# 1. Universal domain-agnostic prefix extraction + Always Authoritative (AA=1)
+target = """\tprefix, ok := question.Name.TrimSuffix(domain)
+\tif !ok {
+\t\t// Not a name we are authoritative for.
+\t\tresp.Flags |= dns.RcodeNameError
+\t\tlog.Printf("NXDOMAIN: not authoritative for %s", question.Name)
+\t\treturn resp, nil
+\t}
+\tresp.Flags |= 0x0400 // AA = 1"""
+
+replacement = """\tresp.Flags |= 0x0400 // AA = 1 (Always authoritative for delegated tunnel zone)
+\tprefix, ok := question.Name.TrimSuffix(domain)
 \tif !ok {
 \t\tfor i := 1; i < len(question.Name); i++ {
 \t\t\tcand := question.Name[:i]
@@ -121,11 +130,35 @@ replacement = """\tprefix, ok := question.Name.TrimSuffix(domain)
 \t\t\t\tbreak
 \t\t\t}
 \t\t}
+\t}
+\tif !ok {
+\t\tresp.Flags |= dns.RcodeNameError
+\t\treturn resp, nil
 \t}"""
 assert target in code
 code = code.replace(target, replacement, 1)
 
-# 2. KCP Turbo Mode (nodelay=1, interval=10ms, resend=2, nc=1)
+# 2. Return AA=1 NOERROR (NODATA) for QNAME minimization / non-tunnel queries so ISP SIM DNS resolvers never block the zone
+recv_target = """\t\t} else {
+\t\t\t// Payload is not long enough to contain a ClientID.
+\t\t\tif resp != nil && resp.Rcode() == dns.RcodeNoError {
+\t\t\t\tresp.Flags |= dns.RcodeNameError
+\t\t\t\tlog.Printf("NXDOMAIN: %d bytes are too short to contain a ClientID", n)
+\t\t\t}
+\t\t}"""
+recv_replacement = """\t\t} else {
+\t\t\tif resp != nil && (resp.Rcode() == dns.RcodeNoError || resp.Rcode() == dns.RcodeNameError) {
+\t\t\t\tresp.Flags = (resp.Flags &^ 0x000f) | 0x0400 // QR=1, AA=1, RCODE=0 (NOERROR NODATA for QNAME minimization)
+\t\t\t\tif wire, err := resp.WireFormat(); err == nil {
+\t\t\t\t\tdnsConn.WriteTo(wire, addr)
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t}"""
+assert recv_target in code
+code = code.replace(recv_target, recv_replacement, 1)
+
+# 3. KCP Turbo Mode tuned for high-jitter SIM DNS (nodelay=1, interval=40ms, resend=0, nc=1)
 kcp_target = """\t\tconn.SetNoDelay(
 \t\t\t0, // default nodelay
 \t\t\t0, // default interval
@@ -134,39 +167,19 @@ kcp_target = """\t\tconn.SetNoDelay(
 \t\t)"""
 kcp_replacement = """\t\tconn.SetNoDelay(
 \t\t\t1,  // nodelay=1 (turbo)
-\t\t\t10, // interval=10ms (10x faster flush)
-\t\t\t2,  // resend=2 (fast retransmit)
+\t\t\t40, // interval=40ms (safe for SIM DNS jitter)
+\t\t\t0,  // resend=0 (ignore DNS out-of-order reordering)
 \t\t\t1,  // nc=1 => congestion window off
 \t\t)"""
 if kcp_target in code:
     code = code.replace(kcp_target, kcp_replacement, 1)
 
-# 3. Larger smux receive/stream buffers (16MB / 4MB)
+# 4. Larger smux receive/stream buffers (16MB / 4MB)
 smux_target = "\tsmuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536"
 smux_replacement = """\tsmuxConfig.MaxReceiveBuffer = 16 * 1024 * 1024
 \tsmuxConfig.MaxStreamBuffer = 4 * 1024 * 1024"""
 if smux_target in code:
     code = code.replace(smux_target, smux_replacement, 1)
-
-# 4. Run 4 parallel sendLoop workers for higher burst throughput
-sendloop_target = """\tgo func() {
-\t\tdefer done()
-\t\terr := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
-\t\tif err != nil {
-\t\t\tlog.Printf("sendLoop: %v", err)
-\t\t}
-\t}()"""
-sendloop_replacement = """\tfor i := 0; i < 4; i++ {
-\t\tgo func() {
-\t\t\tdefer done()
-\t\t\terr := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
-\t\t\tif err != nil {
-\t\t\t\tlog.Printf("sendLoop: %v", err)
-\t\t\t}
-\t\t}()
-\t}"""
-if sendloop_target in code:
-    code = code.replace(sendloop_target, sendloop_replacement, 1)
 
 with open(p, "w") as f:
     f.write(code)
@@ -296,6 +309,6 @@ STARTUP_EOF
 sed -i "s|PRIVKEY_PLACEHOLDER|$DNSTT_PRIVKEY|g" /tmp/slowdns-startup.sh
 sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
 sed -i "s|UUID_PLACEHOLDER|$V2RAY_UUID|g" /tmp/slowdns-startup.sh
-sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-gcp-startup.sh 2>/dev/null || sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-startup.sh
+sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-startup.sh
 
 log "VM Startup script ready ✓"
