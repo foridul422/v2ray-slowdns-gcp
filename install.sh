@@ -1,17 +1,15 @@
 #!/bin/bash
 # ============================================================
-#  MASTER INSTALL SCRIPT
+#  MASTER INSTALL SCRIPT — No pause, full auto
 #  V2Ray + SlowDNS Server on Google Cloud Shell
 #  Usage: bash install.sh
 # ============================================================
 
 set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Colors ───────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 phase_header() {
     echo ""
@@ -21,7 +19,6 @@ phase_header() {
     echo ""
 }
 
-# ── Make all scripts executable ─────────────────────────────
 chmod +x "$SCRIPT_DIR"/*.sh
 
 # ══════════════════════════════════════════
@@ -30,32 +27,24 @@ chmod +x "$SCRIPT_DIR"/*.sh
 phase_header "Phase 1/4 — Environment Setup"
 bash "$SCRIPT_DIR/01_setup_env.sh"
 
-echo ""
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BOLD}👆 Domain-এ NS record set করো এখন!${NC}"
-echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-echo -ne "${CYAN}NS record set করা হয়েছে? Continue করতে${NC} [Enter] চাপো: "
-read -r
-
 # ══════════════════════════════════════════
-#  PHASE 3: SlowDNS Install
+#  PHASE 2: SlowDNS Install
 # ══════════════════════════════════════════
-phase_header "Phase 2/4 — SlowDNS Server Install"
+phase_header "Phase 2/4 — SlowDNS (DNSTT) Server Install"
 bash "$SCRIPT_DIR/03_slowdns_install.sh"
 
 # ══════════════════════════════════════════
-#  PHASE 4: V2Ray Install
+#  PHASE 3: V2Ray Install
 # ══════════════════════════════════════════
 phase_header "Phase 3/4 — V2Ray Install & Configure"
 bash "$SCRIPT_DIR/04_v2ray_install.sh"
 
 # ══════════════════════════════════════════
-#  PHASE 7: Generate Client Config & Output
+#  PHASE 4: Generate Client Config & Output
 # ══════════════════════════════════════════
 phase_header "Phase 4/4 — Generating Client Config"
 bash "$SCRIPT_DIR/07_client_config.sh"
 
 echo ""
-echo -e "${BOLD}${GREEN}🎉 সব কিছু complete! তোমার config ready.${NC}"
+echo -e "${BOLD}${GREEN}🎉 সব complete! উপরে VLESS link ও NS record info দেখো।${NC}"
 echo ""
