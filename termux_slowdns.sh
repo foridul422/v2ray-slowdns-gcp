@@ -468,7 +468,7 @@ fi
 
 # ── 3. Load or Prompt Configuration ─────────────────────────────────────────
 DEFAULT_PUBKEY="58a0eeb51c71ad9fe39997ded7cf4e1f9700d497edd47af5c2c42a66611bc34c"
-DEFAULT_DOMAIN="tunnel2.foridul.pp.ua"
+DEFAULT_DOMAIN="x.foridul.pp.ua"
 DEFAULT_UUID="60c44ed2-4dd4-43ab-9a66-a0b40623a1d4"
 
 if [[ -f "$CONF_FILE" ]]; then
@@ -493,8 +493,8 @@ PUBKEY="${PUBKEY:-$DEFAULT_PUBKEY}"
 VLESS_UUID="${VLESS_UUID:-$DEFAULT_UUID}"
 
 if [[ -z "${TUNNEL_DOMAIN:-}" ]]; then
-    echo -ne "${YELLOW}🌐 Tunnel NS Domain [Default: $DEFAULT_DOMAIN]: ${NC}"
-    read -r INPUT_DOMAIN
+    echo -ne "${YELLOW}🌐 Tunnel NS Domain [Auto: $DEFAULT_DOMAIN in 3s]: ${NC}"
+    read -t 3 -r INPUT_DOMAIN || echo ""
     TUNNEL_DOMAIN="${INPUT_DOMAIN:-$DEFAULT_DOMAIN}"
 fi
 TUNNEL_DOMAIN=$(echo "$TUNNEL_DOMAIN" | tr -d '[:space:]')
@@ -509,8 +509,8 @@ if [[ -z "${DNS_TARGET:-}" ]]; then
     echo -e "  ${GREEN}3)${NC} Google DoH HTTPS (${YELLOW}https://dns.google/dns-query${NC})"
     echo -e "  ${GREEN}4)${NC} Google DoT TLS (${YELLOW}dns.google:853${NC})"
     echo -e "  ${GREEN}5)${NC} Custom DNS IP (নিজের ইচ্ছেমতো DNS IP)"
-    echo -ne "${YELLOW}পছন্দ (1-5) [Default: 1]: ${NC}"
-    read -r MODE_CHOICE
+    echo -ne "${YELLOW}পছন্দ (1-5) [Auto: 1 in 3s]: ${NC}"
+    read -t 3 -r MODE_CHOICE || echo ""
     case "${MODE_CHOICE:-1}" in
         2) DNS_MODE="-udp"; DNS_TARGET="8.8.8.8:53,8.8.4.4:53,1.1.1.1:53,1.0.0.1:53" ;;
         3) DNS_MODE="-doh"; DNS_TARGET="https://dns.google/dns-query" ;;
@@ -546,6 +546,7 @@ EOF
 
 # Create 'slowdns' shortcut in Termux $PREFIX/bin if available
 if [[ -n "${PREFIX:-}" && -d "$PREFIX/bin" ]]; then
+    SCRIPT_REAL=$(realpath "$0" 2>/dev/null || echo "$HOME/termux_slowdns.sh")
     cp -f "$0" "$HOME/termux_slowdns.sh" 2>/dev/null || true
     chmod +x "$HOME/termux_slowdns.sh"
     cat > "$PREFIX/bin/slowdns" << SHORTCUT_EOF
