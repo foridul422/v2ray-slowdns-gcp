@@ -67,8 +67,18 @@ banner "Detecting GCP Project"
 
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
 [[ "$PROJECT_ID" == "(unset)" ]] && PROJECT_ID=""
+
+# Verify if current PROJECT_ID is still active, otherwise auto-select active project from gcloud projects list
+ACTIVE_PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null || true)
+if [[ -n "$ACTIVE_PROJECTS" ]]; then
+    if [[ -z "$PROJECT_ID" ]] || ! echo "$ACTIVE_PROJECTS" | grep -qx "$PROJECT_ID"; then
+        PROJECT_ID=$(echo "$ACTIVE_PROJECTS" | head -n 1)
+        gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
+    fi
+fi
+
 if [[ -z "$PROJECT_ID" ]]; then
-    err "GCP Project ID পাওয়া যায়নি! আগে Google Cloud Shell-এ প্রজেক্ট সিলেক্ট করো।"
+    err "কোনো অ্যাক্টিভ GCP Project পাওয়া যায়নি! নতুন ল্যাব স্টার্ট করে আবার চেষ্টা করো।"
 fi
 log "GCP Project ID: ${BOLD}$PROJECT_ID${NC}"
 

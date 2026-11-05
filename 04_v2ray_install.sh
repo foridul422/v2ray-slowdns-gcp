@@ -21,11 +21,9 @@ banner() {
 
 banner "Phase 3: Creating GCP VM & Installing Server"
 
-# ── 1. Detect Allowed Zones & Singapore Priority ────────────
+# ── 1. Detect Allowed Zones (Singapore FIRST!) ──────────────
 DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
-DEFAULT_REGION=$(gcloud config get-value compute/region 2>/dev/null || true)
 [[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
-[[ "$DEFAULT_REGION" == "(unset)" ]] && DEFAULT_REGION=""
 
 META_ZONE=$(gcloud compute project-info describe --project="$PROJECT_ID" \
     --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null || true)
@@ -36,24 +34,20 @@ ALLOWED_LOCATIONS=$(gcloud resource-manager org-policies describe constraints/gc
     --project="$PROJECT_ID" \
     --format="value(listPolicy.allowedValues)" 2>/dev/null || true)
 
-[[ -n "$META_ZONE" ]] && info "Project default zone: ${BOLD}$META_ZONE${NC}"
-[[ -n "$ALLOWED_LOCATIONS" ]] && info "Allowed locations policy: ${BOLD}$ALLOWED_LOCATIONS${NC}"
-
 CANDIDATE_ZONES=()
 
-# 1. If project has a specific default zone/region set by Qwiklabs, try that first
-[[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
-[[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
-[[ -n "$DEFAULT_REGION" ]] && CANDIDATE_ZONES+=("${DEFAULT_REGION}-a" "${DEFAULT_REGION}-b" "${DEFAULT_REGION}-c")
-[[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
-
-# 2. Singapore (SG) & Asia zones (if not blocked by org policy)
+# 1. Always try Singapore (SG) & Asia FIRST if allowed by org policy
 if [[ -z "$ALLOWED_LOCATIONS" ]] || [[ "$ALLOWED_LOCATIONS" == *"asia"* ]]; then
     CANDIDATE_ZONES+=(
         "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
         "asia-south1-a" "asia-east1-a"
     )
 fi
+
+# 2. Next, project default zone/region
+[[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
+[[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
+[[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
 
 # 3. US & Europe fallback zones
 CANDIDATE_ZONES+=(
@@ -106,6 +100,14 @@ for ZONE in "${TARGET_ZONES[@]}"; do
             break 2
         fi
 
+        # If project lacks compute.instances.create permission (lab expired or no Compute role), stop immediately
+        if echo "$OUT" | grep -qi "Required 'compute.instances.create' permission"; then
+            echo ""
+            warn "এই প্রজেক্টে ($PROJECT_ID) 'compute.instances.create' (VM তৈরি করার) পারমিশন নেই!"
+            warn "কারণ: হয় তোমার Qwiklabs ল্যাবের সময় (Timer) শেষ হয়ে গেছে, অথবা এই ল্যাবে VM তৈরির পারমিশন দেওয়া নেই।"
+            err "নতুন একটি Qwiklabs ল্যাব (যাতে Compute Engine পারমিশন আছে) স্টার্ট করে আবার চেষ্টা করো।"
+        fi
+
         if ! echo "$OUT" | grep -qiE "quota|exceeded|RESOURCE_POOL_EXHAUSTED"; then
             break
         fi
@@ -116,7 +118,7 @@ for ZONE in "${TARGET_ZONES[@]}"; do
 done
 
 if [[ -z "$CREATED_IP" ]]; then
-    err "GCP VM তৈরি করা যায়নি! উপরের এরর মেসেজটি দেখো (প্রজেক্টের টাইম শেষ বা Compute Engine পারমিশন নেই)।"
+    err "GCP VM তৈরি করা যায়নি! উপরের এরর মেসেজটি দেখো।"
 fi
 
 {
