@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  Phase 3 — Create GCP VM & Wait for SlowDNS + VLESS Services
+#  Phase 3 — Create/Reuse GCP VM & Install SlowDNS + VLESS
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -19,103 +19,146 @@ banner() {
     echo -e "${BOLD}${CYAN}═══════════════════════════════════════${NC}\n"
 }
 
-banner "Phase 3: Creating GCP VM & Installing Server"
+banner "Phase 3: Setting Up GCP VM & Installing Server"
 
-# ── 1. Detect Allowed Zones (Singapore FIRST!) ──────────────
-DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
-[[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
+# Ensure Compute Engine API is enabled
+gcloud services enable compute.googleapis.com --project="$PROJECT_ID" --quiet 2>/dev/null || true
 
-META_ZONE=$(gcloud compute project-info describe --project="$PROJECT_ID" \
-    --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null || true)
-META_REGION=$(gcloud compute project-info describe --project="$PROJECT_ID" \
-    --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null || true)
-
-ALLOWED_LOCATIONS=$(gcloud resource-manager org-policies describe constraints/gcp.resourceLocations \
-    --project="$PROJECT_ID" \
-    --format="value(listPolicy.allowedValues)" 2>/dev/null || true)
-
-CANDIDATE_ZONES=()
-
-# 1. Always try Singapore (SG) & Asia FIRST if allowed by org policy
-if [[ -z "$ALLOWED_LOCATIONS" ]] || [[ "$ALLOWED_LOCATIONS" == *"asia"* ]]; then
-    CANDIDATE_ZONES+=(
-        "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
-        "asia-south1-a" "asia-east1-a"
-    )
-fi
-
-# 2. Next, project default zone/region
-[[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
-[[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
-[[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
-
-# 3. US & Europe fallback zones
-CANDIDATE_ZONES+=(
-    "us-central1-a" "us-central1-b" "us-central1-c" "us-central1-f"
-    "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b" "us-west4-b"
-    "europe-west1-b" "europe-west4-a"
-)
-
-TARGET_ZONES=()
-for z in "${CANDIDATE_ZONES[@]}"; do
-    [[ -n "$z" ]] && [[ ! " ${TARGET_ZONES[*]} " =~ " ${z} " ]] && TARGET_ZONES+=("$z")
-done
-
-# ── 2. Check if VM already exists, or create a new one ──────
 CREATED_IP=""
 DEPLOYED_ZONE=""
+ACTIVE_VM_NAME="$VM_NAME"
 
-EXISTING_INFO=$(gcloud compute instances list --project="$PROJECT_ID" \
-    --filter="name=$VM_NAME" \
-    --format="value(zone,networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null | head -n 1 || true)
+# ── 1. Check if ANY Running VM Already Exists in the Lab ─────
+info "Checking for existing VMs in project ($PROJECT_ID)..."
+EXISTING_VM_LINE=$(gcloud compute instances list --project="$PROJECT_ID" \
+    --filter="status=RUNNING" \
+    --format="value(name,zone,networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null | head -n 1 || true)
 
-if [[ -n "$EXISTING_INFO" ]]; then
-    DEPLOYED_ZONE=$(echo "$EXISTING_INFO" | awk '{print $1}')
-    CREATED_IP=$(echo "$EXISTING_INFO" | awk '{print $2}')
-    warn "Existing VM '$VM_NAME' found in $DEPLOYED_ZONE ($CREATED_IP) — replacing with fresh config..."
-    gcloud compute instances delete "$VM_NAME" --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" --quiet 2>/dev/null || true
-    CREATED_IP=""
+if [[ -n "$EXISTING_VM_LINE" ]]; then
+    EXISTING_NAME=$(echo "$EXISTING_VM_LINE" | awk '{print $1}')
+    EXISTING_ZONE=$(echo "$EXISTING_VM_LINE" | awk '{print $2}')
+    EXISTING_IP=$(echo "$EXISTING_VM_LINE" | awk '{print $3}')
+
+    if [[ -n "$EXISTING_IP" ]]; then
+        ACTIVE_VM_NAME="$EXISTING_NAME"
+        DEPLOYED_ZONE="$EXISTING_ZONE"
+        CREATED_IP="$EXISTING_IP"
+        log "Found existing running VM: ${BOLD}$ACTIVE_VM_NAME${NC} ($DEPLOYED_ZONE) | IP: ${BOLD}$CREATED_IP${NC}"
+        info "Installing SlowDNS + VLESS directly onto '$ACTIVE_VM_NAME'..."
+
+        gcloud compute instances add-tags "$ACTIVE_VM_NAME" \
+            --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
+            --tags=http-server,https-server --quiet 2>/dev/null || true
+
+        gcloud compute instances add-metadata "$ACTIVE_VM_NAME" \
+            --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
+            --metadata-from-file=startup-script=/tmp/slowdns-startup.sh --quiet 2>/dev/null || true
+
+        # Run startup script directly over SSH in background or foreground
+        gcloud compute ssh "$ACTIVE_VM_NAME" \
+            --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" \
+            --strict-host-key-checking=no --quiet \
+            --command="sudo bash -s" < /tmp/slowdns-startup.sh >/dev/null 2>&1 &
+    fi
 fi
 
-for ZONE in "${TARGET_ZONES[@]}"; do
-    info "Trying zone: ${BOLD}$ZONE${NC}..."
-    for TYPE in "e2-medium" "e2-small" "e2-micro"; do
-        OUT=$(gcloud compute instances create "$VM_NAME" \
-            --project="$PROJECT_ID" \
-            --zone="$ZONE" \
-            --machine-type="$TYPE" \
-            --image-family=ubuntu-2204-lts \
-            --image-project=ubuntu-os-cloud \
-            --tags=http-server,https-server \
-            --scopes=cloud-platform \
-            --metadata-from-file=startup-script=/tmp/slowdns-startup.sh \
-            --format='get(networkInterfaces[0].accessConfigs[0].natIP)' \
-            --quiet 2>&1 || true)
+# ── 2. If No Running VM Exists, Create a New VM ──────────────
+if [[ -z "$CREATED_IP" ]]; then
+    DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
+    [[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
 
-        IP=$(echo "$OUT" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1 || true)
-        if [[ -n "$IP" ]]; then
-            CREATED_IP="$IP"
-            DEPLOYED_ZONE="$ZONE"
-            log "VM Created! Zone: ${BOLD}$ZONE${NC} | Type: ${BOLD}$TYPE${NC} | IP: ${BOLD}$CREATED_IP${NC}"
-            break 2
-        fi
+    META_ZONE=$(gcloud compute project-info describe --project="$PROJECT_ID" \
+        --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null || true)
+    META_REGION=$(gcloud compute project-info describe --project="$PROJECT_ID" \
+        --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null || true)
 
-        # If project lacks compute.instances.create permission (lab expired or no Compute role), stop immediately
-        if echo "$OUT" | grep -qi "Required 'compute.instances.create' permission"; then
-            echo ""
-            warn "এই প্রজেক্টে ($PROJECT_ID) 'compute.instances.create' (VM তৈরি করার) পারমিশন নেই!"
-            warn "কারণ: হয় তোমার Qwiklabs ল্যাবের সময় (Timer) শেষ হয়ে গেছে, অথবা এই ল্যাবে VM তৈরির পারমিশন দেওয়া নেই।"
-            err "নতুন একটি Qwiklabs ল্যাব (যাতে Compute Engine পারমিশন আছে) স্টার্ট করে আবার চেষ্টা করো।"
-        fi
+    ALLOWED_LOCATIONS=$(gcloud resource-manager org-policies describe constraints/gcp.resourceLocations \
+        --project="$PROJECT_ID" \
+        --format="value(listPolicy.allowedValues)" 2>/dev/null || true)
 
-        if ! echo "$OUT" | grep -qiE "quota|exceeded|RESOURCE_POOL_EXHAUSTED"; then
-            break
-        fi
+    CANDIDATE_ZONES=()
+
+    # 1. Try Singapore (SG) & Asia FIRST if allowed by org policy
+    if [[ -z "$ALLOWED_LOCATIONS" ]] || [[ "$ALLOWED_LOCATIONS" == *"asia"* ]]; then
+        CANDIDATE_ZONES+=(
+            "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
+            "asia-south1-a" "asia-east1-a"
+        )
+    fi
+
+    # 2. Next, project default zone/region
+    [[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
+    [[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
+    [[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
+
+    # 3. US & Europe fallback zones
+    CANDIDATE_ZONES+=(
+        "us-central1-a" "us-central1-b" "us-central1-c" "us-central1-f"
+        "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b" "us-west4-b"
+        "europe-west1-b" "europe-west4-a"
+    )
+
+    TARGET_ZONES=()
+    for z in "${CANDIDATE_ZONES[@]}"; do
+        [[ -n "$z" ]] && [[ ! " ${TARGET_ZONES[*]} " =~ " ${z} " ]] && TARGET_ZONES+=("$z")
     done
 
-    ERR_SNIP=$(echo "$OUT" | grep -A 1 -Ei "ERROR|denied|quota|policy|ZONE_RESOURCE|not found|disabled" | tr '\n' ' ' | sed 's/  */ /g' || true)
-    warn "Zone $ZONE skipped: ${ERR_SNIP:-not available}"
-done
+    for ZONE in "${TARGET_ZONES[@]}"; do
+        info "Trying zone: ${BOLD}$ZONE${NC}..."
+        for TYPE in "e2-medium" "e2-small" "e2-micro" "n1-standard-1"; do
+            # Try standard Debian 12 image first (fastest & allowed in all Qwiklabs Compute labs)
+            OUT=$(gcloud compute instances create "$VM_NAME" \
+                --project="$PROJECT_ID" \
+                --zone="$ZONE" \
+                --machine-type="$TYPE" \
+                --image-family=debian-12 \
+                --image-project=debian-cloud \
+                --tags=http-server,https-server \
+                --metadata-from-file=startup-script=/tmp/slowdns-startup.sh \
+                --format='get(networkInterfaces[0].accessConfigs[0].natIP)' \
+                --quiet 2>&1 || true)
+
+            # Fallback if service account scope is restricted by Qwiklabs policy
+            if echo "$OUT" | grep -qiE "serviceAccount|actAs|scope"; then
+                OUT=$(gcloud compute instances create "$VM_NAME" \
+                    --project="$PROJECT_ID" \
+                    --zone="$ZONE" \
+                    --machine-type="$TYPE" \
+                    --image-family=debian-12 \
+                    --image-project=debian-cloud \
+                    --no-service-account --no-scopes \
+                    --tags=http-server,https-server \
+                    --metadata-from-file=startup-script=/tmp/slowdns-startup.sh \
+                    --format='get(networkInterfaces[0].accessConfigs[0].natIP)' \
+                    --quiet 2>&1 || true)
+            fi
+
+            IP=$(echo "$OUT" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1 || true)
+            if [[ -n "$IP" ]]; then
+                CREATED_IP="$IP"
+                DEPLOYED_ZONE="$ZONE"
+                log "VM Created! Zone: ${BOLD}$ZONE${NC} | Type: ${BOLD}$TYPE${NC} | IP: ${BOLD}$CREATED_IP${NC}"
+                break 2
+            fi
+
+            # Stop immediately if this Qwiklabs lab does not have Compute Engine permission
+            if echo "$OUT" | grep -qi "Required 'compute.instances.create' permission"; then
+                echo ""
+                warn "এই প্রজেক্টে ($PROJECT_ID) নতুন VM তৈরি করার ('compute.instances.create') পারমিশন নেই এবং কোনো চালু VM-ও নেই!"
+                warn "কারণ: তুমি সম্ভবত একটি Cloud Run ল্যাব ওপেন করেছো অথবা ল্যাবের সময় (Timer) শেষ হয়ে গেছে।"
+                echo -e "${BOLD}${GREEN}💡 সমাধান:${NC} Qwiklabs-এ যেকোনো ${BOLD}Compute Engine / Virtual Machine${NC} ল্যাব (যেমন: 'A Tour of Google Cloud Hands-on Labs' বা 'Creating a Virtual Machine') স্টার্ট করে এই কমান্ডটি চালাও।"
+                err "Compute Engine পারমিশনযুক্ত ল্যাব স্টার্ট করে আবার চেষ্টা করো।"
+            fi
+
+            if ! echo "$OUT" | grep -qiE "quota|exceeded|RESOURCE_POOL_EXHAUSTED|machine type"; then
+                break
+            fi
+        done
+
+        ERR_SNIP=$(echo "$OUT" | grep -A 1 -Ei "ERROR|denied|quota|policy|ZONE_RESOURCE|not found|disabled" | tr '\n' ' ' | sed 's/  */ /g' || true)
+        warn "Zone $ZONE skipped: ${ERR_SNIP:-not available}"
+    done
+fi
 
 if [[ -z "$CREATED_IP" ]]; then
     err "GCP VM তৈরি করা যায়নি! উপরের এরর মেসেজটি দেখো।"
@@ -126,7 +169,7 @@ fi
     echo "DEPLOYED_ZONE=\"$DEPLOYED_ZONE\""
 } >> "$ENV_FILE"
 
-# ── 3. Wait for VM Startup Script to Finish (~45s) ──────────
+# ── 3. Wait for VM Startup Script to Finish (~40s) ──────────
 banner "Waiting for SlowDNS + VLESS Installation on VM"
 info "VM ($CREATED_IP)-এ এখন dnstt-server এবং Xray (VLESS) ইনস্টল হচ্ছে (~40-60 সেকেন্ড লাগবে)..."
 

@@ -23,16 +23,24 @@ banner() {
 
 banner "Phase 2: GCP Firewall & SlowDNS Startup Config"
 
-# ── 1. Open GCP Firewall Rules ──────────────────────────────
+# ── 1. Open GCP Firewall Rules (on all VPC networks) ────────
 info "Opening GCP Firewall ports (UDP:53, TCP:22,80,443,10086)..."
 
-gcloud compute firewall-rules create allow-slowdns-v2ray \
-    --project="$PROJECT_ID" \
-    --allow=udp:53,udp:5300,tcp:22,tcp:80,tcp:443,tcp:10086 \
-    --source-ranges=0.0.0.0/0 \
-    --direction=INGRESS \
-    --description="Allow SlowDNS (UDP 53) and V2Ray VLESS (TCP 10086)" \
-    --quiet 2>/dev/null || true
+gcloud services enable compute.googleapis.com --project="$PROJECT_ID" --quiet 2>/dev/null || true
+
+NETWORKS=$(gcloud compute networks list --project="$PROJECT_ID" --format="value(name)" 2>/dev/null || echo "default")
+[[ -z "$NETWORKS" ]] && NETWORKS="default"
+
+for NET in $NETWORKS; do
+    gcloud compute firewall-rules create "allow-slowdns-v2ray-${NET}" \
+        --project="$PROJECT_ID" \
+        --network="$NET" \
+        --allow=udp:53,udp:5300,tcp:22,tcp:80,tcp:443,tcp:10086 \
+        --source-ranges=0.0.0.0/0 \
+        --direction=INGRESS \
+        --description="Allow SlowDNS (UDP 53) and V2Ray VLESS (TCP 10086)" \
+        --quiet 2>/dev/null || true
+done
 
 log "Firewall rules configured (UDP 53 & TCP 10086 OPEN) ✓"
 

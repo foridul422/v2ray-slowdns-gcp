@@ -62,24 +62,36 @@ log "Domain     : ${BOLD}$USER_DOMAIN${NC}"
 log "Tunnel NS  : ${BOLD}$TUNNEL_DOMAIN${NC}"
 log "NS Record  : ${BOLD}$NS_DOMAIN${NC}"
 
-# ── 2. Detect GCP Project ID ────────────────────────────────
+# ── 2. Detect Active GCP Project ID (with Compute access) ───
 banner "Detecting GCP Project"
 
-PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
-[[ "$PROJECT_ID" == "(unset)" ]] && PROJECT_ID=""
+CURRENT_PROJECT=$(gcloud config get-value project 2>/dev/null || true)
+[[ "$CURRENT_PROJECT" == "(unset)" ]] && CURRENT_PROJECT=""
 
-# Verify if current PROJECT_ID is still active, otherwise auto-select active project from gcloud projects list
-ACTIVE_PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null || true)
-if [[ -n "$ACTIVE_PROJECTS" ]]; then
-    if [[ -z "$PROJECT_ID" ]] || ! echo "$ACTIVE_PROJECTS" | grep -qx "$PROJECT_ID"; then
-        PROJECT_ID=$(echo "$ACTIVE_PROJECTS" | head -n 1)
-        gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
+ALL_PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null || true)
+PROJECT_ID=""
+
+# Check each available project and pick one where Compute Engine is accessible
+for P in $CURRENT_PROJECT $ALL_PROJECTS; do
+    [[ -z "$P" ]] && continue
+    gcloud services enable compute.googleapis.com --project="$P" --quiet 2>/dev/null || true
+    if gcloud compute zones list --project="$P" --limit=1 --quiet >/dev/null 2>&1; then
+        PROJECT_ID="$P"
+        break
     fi
+done
+
+# Fallback to first active project if none matched zone check yet
+if [[ -z "$PROJECT_ID" ]]; then
+    PROJECT_ID=$(echo "$ALL_PROJECTS" | head -n 1)
+    [[ -z "$PROJECT_ID" ]] && PROJECT_ID="$CURRENT_PROJECT"
 fi
 
 if [[ -z "$PROJECT_ID" ]]; then
     err "কোনো অ্যাক্টিভ GCP Project পাওয়া যায়নি! নতুন ল্যাব স্টার্ট করে আবার চেষ্টা করো।"
 fi
+
+gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
 log "GCP Project ID: ${BOLD}$PROJECT_ID${NC}"
 
 # ── 3. Generate dnstt Keys & VLESS UUID ─────────────────────
