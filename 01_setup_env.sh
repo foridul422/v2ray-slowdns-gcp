@@ -1,15 +1,19 @@
 #!/bin/bash
 # ============================================================
-#  Phase 1 — Environment Setup (No pause, full auto)
-#  V2Ray + SlowDNS on Google Cloud Shell / Ubuntu VPS
+#  Phase 1 — Environment, Domain & Key Generation
+#  V2Ray (VLESS) + SlowDNS GCP VM Auto-Deployer
 # ============================================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-LOG_FILE="$HOME/v2ray-slowdns-gcp/output/install.log"
-mkdir -p "$HOME/v2ray-slowdns-gcp/output/keys"
-mkdir -p "$HOME/v2ray-slowdns-gcp/config"
+INSTALL_DIR="$HOME/v2ray-slowdns-gcp"
+CONFIG_DIR="$INSTALL_DIR/config"
+OUTPUT_DIR="$INSTALL_DIR/output"
+KEYS_DIR="$OUTPUT_DIR/keys"
+LOG_FILE="$OUTPUT_DIR/install.log"
+
+mkdir -p "$KEYS_DIR" "$CONFIG_DIR"
 
 log()    { echo -e "${GREEN}[✔]${NC} $1" | tee -a "$LOG_FILE"; }
 warn()   { echo -e "${YELLOW}[⚠]${NC} $1" | tee -a "$LOG_FILE"; }
@@ -29,14 +33,13 @@ cat << 'EOF'
   \ V /   /   __/ /   |    |   \__ \|  |_| () || \/ ||  _ <|     ||    |
    \_/ |_|  \___|_|   |_/\_|   |___/|____|\__/  \__/ |____/|_|\__||_/\_|
 
-         V2Ray + SlowDNS | Auto Setup Script
+      V2Ray (VLESS) + SlowDNS | GCP VM Auto-Deployer
 EOF
 echo -e "${NC}"
 
-# ── 1. Ask Domain FIRST (so user doesn't wait for apt-get) ──
+# ── 1. Ask Domain FIRST ─────────────────────────────────────
 banner "Step 1: Domain Configuration"
 
-# Flush any leftover Enter keystrokes from pasting command
 while read -r -t 0.1 -n 10000 _ </dev/tty 2>/dev/null; do :; done
 
 USER_DOMAIN="${1:-}"
@@ -58,76 +61,67 @@ NS_DOMAIN="${NS_SUB}.${USER_DOMAIN}"
 log "Domain     : ${BOLD}$USER_DOMAIN${NC}"
 log "Tunnel NS  : ${BOLD}$TUNNEL_DOMAIN${NC}"
 log "NS Record  : ${BOLD}$NS_DOMAIN${NC}"
-info "এখন বাকি সব অটোমেটিক ইনস্টল হবে, কিছু করতে হবে না..."
 
-# ── 2. Architecture & OS ────────────────────────────────────
-banner "Checking System & Installing Tools"
+# ── 2. Detect GCP Project ID ────────────────────────────────
+banner "Detecting GCP Project"
 
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)   ARCH_NAME="amd64" ;;
-    aarch64)  ARCH_NAME="arm64" ;;
-    armv7l)   ARCH_NAME="arm32" ;;
-    *)        err "Unsupported architecture: $ARCH" ;;
-esac
-log "Architecture: $ARCH ($ARCH_NAME)"
+PROJECT_ID=$(gcloud config get-value project 2>/dev/null || true)
+[[ "$PROJECT_ID" == "(unset)" ]] && PROJECT_ID=""
+if [[ -z "$PROJECT_ID" ]]; then
+    err "GCP Project ID পাওয়া যায়নি! আগে Google Cloud Shell-এ প্রজেক্ট সিলেক্ট করো।"
+fi
+log "GCP Project ID: ${BOLD}$PROJECT_ID${NC}"
 
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-if [[ -n "$CLOUD_SHELL" ]] || [[ -f /etc/google_cloud_shell ]]; then
-    IS_CLOUDSHELL=true
+# ── 3. Generate dnstt Keys & VLESS UUID ─────────────────────
+banner "Generating SlowDNS Keys & VLESS UUID"
+
+PRIV_FILE="$KEYS_DIR/server.key"
+PUB_FILE="$KEYS_DIR/server.pub"
+UUID_FILE="$KEYS_DIR/vless.uuid"
+
+if [[ -s "$PRIV_FILE" && -s "$PUB_FILE" ]]; then
+    DNSTT_PRIVKEY=$(tr -d '[:space:]' < "$PRIV_FILE")
+    DNSTT_PUBKEY=$(tr -d '[:space:]' < "$PUB_FILE")
+    log "Reusing existing SlowDNS Keypair ✓"
 else
-    IS_CLOUDSHELL=false
+    PEM=$(openssl genpkey -algorithm X25519 2>/dev/null)
+    DNSTT_PRIVKEY=$(echo "$PEM" | openssl pkey -outform DER 2>/dev/null | tail -c 32 | od -An -tx1 | tr -d ' \n')
+    DNSTT_PUBKEY=$(echo "$PEM" | openssl pkey -pubout -outform DER 2>/dev/null | tail -c 32 | od -An -tx1 | tr -d ' \n')
+    echo "$DNSTT_PRIVKEY" > "$PRIV_FILE"
+    echo "$DNSTT_PUBKEY" > "$PUB_FILE"
+    chmod 600 "$PRIV_FILE"
+    log "Generated new X25519 SlowDNS Keypair ✓"
 fi
+log "Public Key : ${BOLD}$DNSTT_PUBKEY${NC}"
 
-# ── 3. Install tools ────────────────────────────────────────
-TOOLS=(curl wget unzip openssl jq screen socat)
-MISSING=()
-for tool in "${TOOLS[@]}"; do
-    command -v "$tool" &>/dev/null && log "$tool ✓" || MISSING+=("$tool")
-done
-
-if [[ ${#MISSING[@]} -gt 0 ]]; then
-    info "Installing packages: ${MISSING[*]}"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq </dev/null 2>>"$LOG_FILE"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${MISSING[@]}" -qq </dev/null 2>>"$LOG_FILE"
+if [[ -s "$UUID_FILE" ]]; then
+    V2RAY_UUID=$(tr -d '[:space:]' < "$UUID_FILE")
+else
+    V2RAY_UUID=$(cat /proc/sys/kernel/random/uuid)
+    echo "$V2RAY_UUID" > "$UUID_FILE"
 fi
+V2RAY_PORT=10086
+log "VLESS UUID : ${BOLD}$V2RAY_UUID${NC}"
 
-# ── 4. Detect Public IP ──────────────────────────────────────
-banner "Detecting Public IP"
-
-PUBLIC_IP=""
-for src in "https://ifconfig.me" "https://api.ipify.org" "https://icanhazip.com" "https://ident.me"; do
-    IP=$(curl -s --max-time 5 "$src" 2>/dev/null | tr -d '[:space:]')
-    if [[ "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        PUBLIC_IP="$IP"
-        log "Public IP: ${BOLD}$PUBLIC_IP${NC} (via $src)"
-        break
-    fi
-done
-
-if [[ -z "$PUBLIC_IP" ]]; then
-    echo -ne "${YELLOW}Could not auto-detect IP. Enter manually: ${NC}"
-    read -r PUBLIC_IP </dev/tty
-fi
-
-# ── 5. Save env config ──────────────────────────────────────
-ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
+# ── 4. Save env config ──────────────────────────────────────
+ENV_FILE="$CONFIG_DIR/env.conf"
 cat > "$ENV_FILE" << EOF
-# Auto-generated — Phase 1
-PUBLIC_IP="$PUBLIC_IP"
-ARCH_NAME="$ARCH_NAME"
-OS="$OS"
-IS_CLOUDSHELL="$IS_CLOUDSHELL"
+PROJECT_ID="$PROJECT_ID"
+INSTALL_DIR="$INSTALL_DIR"
+CONFIG_DIR="$CONFIG_DIR"
+OUTPUT_DIR="$OUTPUT_DIR"
+KEYS_DIR="$KEYS_DIR"
 LOG_FILE="$LOG_FILE"
-INSTALL_DIR="$HOME/v2ray-slowdns-gcp"
-CONFIG_DIR="$HOME/v2ray-slowdns-gcp/config"
-OUTPUT_DIR="$HOME/v2ray-slowdns-gcp/output"
-KEYS_DIR="$HOME/v2ray-slowdns-gcp/output/keys"
 USER_DOMAIN="$USER_DOMAIN"
 TUNNEL_DOMAIN="$TUNNEL_DOMAIN"
 NS_DOMAIN="$NS_DOMAIN"
 NS_SUB="$NS_SUB"
 TUNNEL_SUB="$TUNNEL_SUB"
+DNSTT_PRIVKEY="$DNSTT_PRIVKEY"
+DNSTT_PUBKEY="$DNSTT_PUBKEY"
+V2RAY_UUID="$V2RAY_UUID"
+V2RAY_PORT="$V2RAY_PORT"
+VM_NAME="slowdns-v2ray"
 EOF
 
-log "Config saved → $ENV_FILE"
+log "Environment config saved ✓"

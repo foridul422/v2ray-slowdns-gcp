@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  Phase 3 — Xray (VLESS) install & configure
+#  Phase 3 — Create GCP VM & Wait for SlowDNS + VLESS Services
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -19,81 +19,94 @@ banner() {
     echo -e "${BOLD}${CYAN}═══════════════════════════════════════${NC}\n"
 }
 
-banner "Phase 3: Xray (VLESS) Install"
+banner "Phase 3: Creating GCP VM & Installing Server"
 
-V2RAY_DIR="$INSTALL_DIR/xray"
-V2RAY_PORT=10086
-mkdir -p "$V2RAY_DIR"
+# ── 1. Detect Allowed Zones ─────────────────────────────────
+DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
+[[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
 
-case "$ARCH_NAME" in
-    amd64) XARCH="64" ;;
-    arm64) XARCH="arm64-v8a" ;;
-    arm32) XARCH="arm32-v7a" ;;
-    *)     err "Unsupported arch" ;;
-esac
+CANDIDATE_ZONES=()
+[[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
+CANDIDATE_ZONES+=(
+    "us-central1-a" "us-central1-b" "us-central1-c" "us-central1-f"
+    "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b"
+    "asia-south1-a" "asia-southeast1-a" "europe-west1-b"
+)
 
-if [[ ! -x "$V2RAY_DIR/xray" ]]; then
-    XVER=$(curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r .tag_name 2>/dev/null)
-    [[ -z "$XVER" || "$XVER" == "null" ]] && XVER="v1.8.24"
-    info "Downloading Xray $XVER..."
-    curl -fL --progress-bar -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XVER}/Xray-linux-${XARCH}.zip" \
-        || err "Xray download failed"
-    unzip -qo /tmp/xray.zip -d "$V2RAY_DIR" || err "unzip failed"
-    chmod +x "$V2RAY_DIR/xray"
+TARGET_ZONES=()
+for z in "${CANDIDATE_ZONES[@]}"; do
+    [[ -n "$z" ]] && [[ ! " ${TARGET_ZONES[*]} " =~ " ${z} " ]] && TARGET_ZONES+=("$z")
+done
+
+# ── 2. Check if VM already exists, or create a new one ──────
+CREATED_IP=""
+DEPLOYED_ZONE=""
+
+EXISTING_INFO=$(gcloud compute instances list --project="$PROJECT_ID" \
+    --filter="name=$VM_NAME" \
+    --format="value(zone,networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null | head -n 1 || true)
+
+if [[ -n "$EXISTING_INFO" ]]; then
+    DEPLOYED_ZONE=$(echo "$EXISTING_INFO" | awk '{print $1}')
+    CREATED_IP=$(echo "$EXISTING_INFO" | awk '{print $2}')
+    warn "Existing VM '$VM_NAME' found in $DEPLOYED_ZONE ($CREATED_IP) — replacing with fresh config..."
+    gcloud compute instances delete "$VM_NAME" --project="$PROJECT_ID" --zone="$DEPLOYED_ZONE" --quiet 2>/dev/null || true
+    CREATED_IP=""
 fi
-log "Xray installed: $V2RAY_DIR/xray"
 
-V2RAY_UUID=$("$V2RAY_DIR/xray" uuid 2>/dev/null)
-[[ -z "$V2RAY_UUID" ]] && V2RAY_UUID=$(cat /proc/sys/kernel/random/uuid)
-log "UUID: $V2RAY_UUID"
+for ZONE in "${TARGET_ZONES[@]}"; do
+    info "Trying zone: $ZONE..."
+    for TYPE in "e2-medium" "e2-small" "e2-micro"; do
+        OUT=$(gcloud compute instances create "$VM_NAME" \
+            --project="$PROJECT_ID" \
+            --zone="$ZONE" \
+            --machine-type="$TYPE" \
+            --image-family=ubuntu-2204-lts \
+            --image-project=ubuntu-os-cloud \
+            --tags=http-server,https-server \
+            --scopes=cloud-platform \
+            --metadata-from-file=startup-script=/tmp/slowdns-startup.sh \
+            --format='get(networkInterfaces[0].accessConfigs[0].natIP)' \
+            --quiet 2>&1 || true)
 
-V2RAY_CONFIG="$CONFIG_DIR/xray_config.json"
-cat > "$V2RAY_CONFIG" << EOF
+        IP=$(echo "$OUT" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1 || true)
+        if [[ -n "$IP" ]]; then
+            CREATED_IP="$IP"
+            DEPLOYED_ZONE="$ZONE"
+            log "VM Created! Zone: ${BOLD}$ZONE${NC} | Type: ${BOLD}$TYPE${NC} | IP: ${BOLD}$CREATED_IP${NC}"
+            break 2
+        fi
+
+        if ! echo "$OUT" | grep -qiE "quota|exceeded"; then
+            break
+        fi
+    done
+done
+
+if [[ -z "$CREATED_IP" ]]; then
+    err "GCP VM তৈরি করা যায়নি! Quota বা Permission চেক করো।"
+fi
+
 {
-  "log": { "loglevel": "warning" },
-  "dns": {
-    "servers": ["8.8.8.8", "1.1.1.1"]
-  },
-  "inbounds": [{
-    "listen": "0.0.0.0",
-    "port": $V2RAY_PORT,
-    "protocol": "vless",
-    "settings": {
-      "clients": [{ "id": "$V2RAY_UUID" }],
-      "decryption": "none"
-    },
-    "streamSettings": { "network": "tcp", "security": "none" }
-  }],
-  "outbounds": [{ "protocol": "freedom" }]
-}
-EOF
-"$V2RAY_DIR/xray" run -test -config "$V2RAY_CONFIG" >>"$LOG_FILE" 2>&1 || err "Xray config test failed — see $LOG_FILE"
-log "Config valid: $V2RAY_CONFIG"
-
-{
-    echo "V2RAY_UUID=\"$V2RAY_UUID\""
-    echo "V2RAY_PORT=\"$V2RAY_PORT\""
-    echo "V2RAY_DIR=\"$V2RAY_DIR\""
+    echo "PUBLIC_IP=\"$CREATED_IP\""
+    echo "DEPLOYED_ZONE=\"$DEPLOYED_ZONE\""
 } >> "$ENV_FILE"
 
-cat > "$INSTALL_DIR/start_v2ray.sh" << STARTSCRIPT
-#!/bin/bash
-exec "$V2RAY_DIR/xray" run -config "$V2RAY_CONFIG" >> "$OUTPUT_DIR/xray.log" 2>&1
-STARTSCRIPT
-chmod +x "$INSTALL_DIR/start_v2ray.sh"
+# ── 3. Wait for VM Startup Script to Finish (~45s) ──────────
+banner "Waiting for SlowDNS + VLESS Installation on VM"
+info "VM ($CREATED_IP)-এ এখন dnstt-server এবং Xray (VLESS) ইনস্টল হচ্ছে (~40-60 সেকেন্ড লাগবে)..."
 
-screen -S v2ray -X quit &>/dev/null || true
-pkill -f "$V2RAY_DIR/xray" &>/dev/null || true
-sleep 1
-screen -dmS v2ray bash "$INSTALL_DIR/start_v2ray.sh"
-sleep 2
-if ss -tlnp 2>/dev/null | grep -q ":$V2RAY_PORT "; then
-    log "Xray listening on port $V2RAY_PORT ✓"
-else
-    warn "Xray not listening — check: tail $OUTPUT_DIR/xray.log"
+READY=false
+for i in $(seq 1 30); do
+    if timeout 2 bash -c "</dev/tcp/$CREATED_IP/$V2RAY_PORT" 2>/dev/null; then
+        READY=true
+        log "VM Services Ready! Port $V2RAY_PORT (VLESS) & UDP 53 (SlowDNS) are LIVE ✓"
+        break
+    fi
+    echo -e "   ⏳ Installing on VM... ($((i*3))s elapsed)"
+    sleep 3
+done
+
+if [[ "$READY" == false ]]; then
+    warn "VM এখনো ব্যাকগ্রাউন্ডে সেটআপ শেষ করছে (আরেকটু সময় লাগতে পারে)।"
 fi
-
-banner "Phase 3 — Complete ✓"
-echo -e "  Protocol : ${BOLD}VLESS (tcp, no TLS — wrapped by dnstt)${NC}"
-echo -e "  UUID     : ${BOLD}$V2RAY_UUID${NC}"
-echo ""

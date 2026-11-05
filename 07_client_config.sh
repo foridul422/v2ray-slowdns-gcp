@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  Phase 4 — Final output: VLESS link + NS records + Public Key
+#  Phase 4 — Final Output: VM IP + NS Records + Public Key + VLESS Links
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -9,54 +9,63 @@ source "$ENV_FILE"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-LOCAL_PORT=1080
-VLESS_LINK="vless://${V2RAY_UUID}@${PUBLIC_IP}:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-SlowDNS"
-VLESS_LOCAL_LINK="vless://${V2RAY_UUID}@127.0.0.1:${LOCAL_PORT}?encryption=none&security=none&type=tcp#GCP-SlowDNS-Local"
+# 1) For SlowDNS Tunnel apps (HTTP Custom / Netmod / DarkTunnel): address MUST be 127.0.0.1:10086
+VLESS_SLOWDNS_LINK="vless://${V2RAY_UUID}@127.0.0.1:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-SlowDNS-VLESS"
+
+# 2) For Direct TCP connection (V2RayNG / NekoBox without SlowDNS): address is VM Public IP
+VLESS_DIRECT_LINK="vless://${V2RAY_UUID}@${PUBLIC_IP}:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-Direct-VLESS"
 
 OUTPUT_FILE="$OUTPUT_DIR/client_config.txt"
 cat > "$OUTPUT_FILE" << EOF
-==================== V2Ray (VLESS) + SlowDNS (dnstt) ====================
-Generated: $(date '+%Y-%m-%d %H:%M:%S')
+==================== GCP V2Ray (VLESS) + SlowDNS ====================
+Generated   : $(date '+%Y-%m-%d %H:%M:%S')
+GCP Project : $PROJECT_ID
+VM Zone     : ${DEPLOYED_ZONE:-unknown}
+VM IP       : $PUBLIC_IP
 
 1) DNS Records (Add these in your Domain / Cloudflare panel)
    Type: A    | Name: $NS_SUB      | Value: $PUBLIC_IP  (Proxy: OFF / DNS Only)
    Type: NS   | Name: $TUNNEL_SUB  | Value: $NS_DOMAIN
 
-2) SlowDNS (dnstt) Info
-   Server IP   : $PUBLIC_IP
-   Nameserver  : $TUNNEL_DOMAIN
-   Public Key  : $DNSTT_PUBKEY
+2) SlowDNS (DNSTT) Settings (HTTP Custom / Netmod / DarkTunnel)
+   NS Domain           : $NS_DOMAIN
+   DNS / Tunnel Domain : $TUNNEL_DOMAIN
+   Public Key          : $DNSTT_PUBKEY
+   DNS Server          : 8.8.8.8 or 1.1.1.1
 
-3) VLESS Link (Server IP)
-   $VLESS_LINK
+3) VLESS Link for SlowDNS Tunnel (127.0.0.1:$V2RAY_PORT)
+   $VLESS_SLOWDNS_LINK
 
-4) VLESS Link (Local 127.0.0.1:$LOCAL_PORT — when using standalone dnstt-client)
-   $VLESS_LOCAL_LINK
-
-5) Standalone dnstt-client command
-   dnstt-client -udp <RESOLVER_IP>:53 -pubkey $DNSTT_PUBKEY $TUNNEL_DOMAIN 127.0.0.1:$LOCAL_PORT
-=========================================================================
+4) VLESS Link for Direct Connection ($PUBLIC_IP:$V2RAY_PORT)
+   $VLESS_DIRECT_LINK
+=====================================================================
 EOF
 
 echo ""
-echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}${GREEN}  ✅ FULL INSTALL COMPLETE! নিচে সব তথ্য দেওয়া হলো:${NC}"
-echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}${GREEN}  ✅ GCP VM DEPLOYMENT COMPLETE! নিচে সব তথ্য দেওয়া হলো:${NC}"
+echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "${BOLD}🌐 1. Domain DNS Records (এখন তোমার Domain-এ এই ২টা record বসাও):${NC}"
-echo -e "   ${CYAN}A Record  :${NC}  Host: ${YELLOW}$NS_SUB${NC}      →  Value: ${YELLOW}$PUBLIC_IP${NC} (DNS Only)"
-echo -e "   ${CYAN}NS Record :${NC}  Host: ${YELLOW}$TUNNEL_SUB${NC}  →  Value: ${YELLOW}$NS_DOMAIN${NC}"
+echo -e "${BOLD}🖥️  GCP VM Info:${NC}"
+echo -e "   ${CYAN}Project    :${NC}  ${YELLOW}$PROJECT_ID${NC}"
+echo -e "   ${CYAN}Zone       :${NC}  ${YELLOW}${DEPLOYED_ZONE:-us-central1}${NC}"
+echo -e "   ${CYAN}Server IP  :${NC}  ${BOLD}${GREEN}$PUBLIC_IP${NC}"
 echo ""
-echo -e "${BOLD}📡 2. SlowDNS / DNSTT Info:${NC}"
-echo -e "   ${CYAN}Server IP  :${NC}  ${YELLOW}$PUBLIC_IP${NC}"
-echo -e "   ${CYAN}Nameserver :${NC}  ${YELLOW}$TUNNEL_DOMAIN${NC}"
-echo -e "   ${CYAN}Public Key :${NC}  ${YELLOW}$DNSTT_PUBKEY${NC}"
+echo -e "${BOLD}🌐 1. Domain DNS Records (এখন তোমার Domain/Cloudflare-এ এই ২টা record বসাও):${NC}"
+echo -e "   ${CYAN}A Record  :${NC}  Name: ${YELLOW}$NS_SUB${NC}      →  IPv4: ${BOLD}${GREEN}$PUBLIC_IP${NC}  ${YELLOW}(Proxy OFF / DNS Only)${NC}"
+echo -e "   ${CYAN}NS Record :${NC}  Name: ${YELLOW}$TUNNEL_SUB${NC}  →  Target: ${YELLOW}$NS_DOMAIN${NC}"
 echo ""
-echo -e "${BOLD}🔗 3. VLESS Link:${NC}"
-echo -e "   ${YELLOW}$VLESS_LINK${NC}"
+echo -e "${BOLD}📡 2. SlowDNS / DNSTT Settings:${NC}"
+echo -e "   ${CYAN}NS Domain     :${NC}  ${YELLOW}$NS_DOMAIN${NC}"
+echo -e "   ${CYAN}Tunnel Domain :${NC}  ${YELLOW}$TUNNEL_DOMAIN${NC}"
+echo -e "   ${CYAN}Public Key    :${NC}  ${YELLOW}$DNSTT_PUBKEY${NC}"
+echo -e "   ${CYAN}DNS Server    :${NC}  ${YELLOW}8.8.8.8 / 1.1.1.1${NC}"
 echo ""
-echo -e "${BOLD}🔗 4. VLESS Link (Local 127.0.0.1 — dnstt-client আলাদা চালালে):${NC}"
-echo -e "   ${YELLOW}$VLESS_LOCAL_LINK${NC}"
+echo -e "${BOLD}🔗 3. VLESS Link (SlowDNS Tunnel — HTTP Custom / Netmod এর জন্য):${NC}"
+echo -e "   ${YELLOW}$VLESS_SLOWDNS_LINK${NC}"
+echo ""
+echo -e "${BOLD}🔗 4. VLESS Link (Direct IP — V2RayNG / NekoBox ডিরেক্ট কানেক্টের জন্য):${NC}"
+echo -e "   ${YELLOW}$VLESS_DIRECT_LINK${NC}"
 echo ""
 echo -e "📄 সব তথ্য সেভ করা আছে: ${CYAN}$OUTPUT_FILE${NC}"
 echo ""

@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-#  MASTER INSTALL SCRIPT — No pause, full auto
-#  V2Ray + SlowDNS Server on Google Cloud Shell
+#  MASTER INSTALL SCRIPT — GCP VM Auto-Deployer
+#  V2Ray (VLESS) + SlowDNS Server via Google Cloud Shell
 #  Usage: bash install.sh [yourdomain.com]
 # ============================================================
 
@@ -22,29 +22,29 @@ phase_header() {
 chmod +x "$SCRIPT_DIR"/*.sh
 
 # ══════════════════════════════════════════
-#  PHASE 1: Environment Setup
+#  PHASE 1: Domain, Project & Key Setup
 # ══════════════════════════════════════════
-phase_header "Phase 1/4 — Environment Setup"
+phase_header "Phase 1/4 — Domain & Key Setup"
 bash "$SCRIPT_DIR/01_setup_env.sh" "$@"
 
 # ══════════════════════════════════════════
-#  PHASE 2: SlowDNS Install
+#  PHASE 2: Firewall & Startup Script
 # ══════════════════════════════════════════
-phase_header "Phase 2/4 — SlowDNS (DNSTT) Server Install"
+phase_header "Phase 2/4 — GCP Firewall & Startup Config"
 bash "$SCRIPT_DIR/03_slowdns_install.sh"
 
 # ══════════════════════════════════════════
-#  PHASE 3: V2Ray Install
+#  PHASE 3: GCP VM Creation & Installation
 # ══════════════════════════════════════════
-phase_header "Phase 3/4 — V2Ray Install & Configure"
+phase_header "Phase 3/4 — Creating GCP VM & Installing Server"
 bash "$SCRIPT_DIR/04_v2ray_install.sh"
 
 # ══════════════════════════════════════════
 #  PHASE 4: Generate Client Config & Output
 # ══════════════════════════════════════════
-phase_header "Phase 4/4 — Generating Client Config"
+phase_header "Phase 4/4 — Generating Final Config"
 bash "$SCRIPT_DIR/07_client_config.sh"
 
 echo ""
-echo -e "${BOLD}${GREEN}🎉 সব complete! উপরে VLESS link ও NS record info দেখো।${NC}"
+echo -e "${BOLD}${GREEN}🎉 সব complete! এখন উপরের IP-তে তোমার NS A-record পয়েন্ট করে কানেক্ট করো।${NC}"
 echo ""

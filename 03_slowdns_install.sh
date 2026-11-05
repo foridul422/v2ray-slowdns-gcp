@@ -1,11 +1,12 @@
 #!/bin/bash
 # ============================================================
-#  Phase 2 — SlowDNS (dnstt) server install
-#  Uses the OFFICIAL dnstt source (www.bamsoftware.com) via Go module proxy.
+#  Phase 2 — GCP Firewall & VM Startup Script Builder
+#  Opens UDP 53 & TCP 10086 in GCP VPC Firewall and prepares
+#  high-speed dnstt-server + Xray VLESS startup script for the VM
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
-[[ ! -f "$ENV_FILE" ]] && echo "[✘] env.conf not found. Run 01_setup_env.sh first!" && exit 1
+[[ ! -f "$ENV_FILE" ]] && echo "[✘] Run 01_setup_env.sh first!" && exit 1
 source "$ENV_FILE"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -20,99 +21,185 @@ banner() {
     echo -e "${BOLD}${CYAN}═══════════════════════════════════════${NC}\n"
 }
 
-banner "Phase 2: SlowDNS (dnstt) Server"
+banner "Phase 2: GCP Firewall & SlowDNS Startup Config"
 
-SLOWDNS_DIR="$INSTALL_DIR/slowdns"
-SERVER_BIN="$SLOWDNS_DIR/dnstt-server"
-mkdir -p "$SLOWDNS_DIR"
+# ── 1. Open GCP Firewall Rules ──────────────────────────────
+info "Opening GCP Firewall ports (UDP:53, TCP:22,80,443,10086)..."
 
-# ── 1. Go toolchain (no sudo needed) ────────────────────────
-info "Checking Go compiler..."
-if [[ -x "$HOME/go-sdk/go/bin/go" ]]; then
-    export PATH="$HOME/go-sdk/go/bin:$PATH"
-fi
+gcloud compute firewall-rules create allow-slowdns-v2ray \
+    --project="$PROJECT_ID" \
+    --allow=udp:53,udp:5300,tcp:22,tcp:80,tcp:443,tcp:10086 \
+    --source-ranges=0.0.0.0/0 \
+    --direction=INGRESS \
+    --description="Allow SlowDNS (UDP 53) and V2Ray VLESS (TCP 10086)" \
+    --quiet 2>/dev/null || true
 
-if ! command -v go &>/dev/null; then
-    info "Downloading Go 1.22.5 (takes ~10s)..."
-    case "$ARCH_NAME" in amd64) GOARCH=amd64;; arm64) GOARCH=arm64;; *) err "Unsupported arch";; esac
-    mkdir -p "$HOME/go-sdk"
-    curl -fL --progress-bar "https://go.dev/dl/go1.22.5.linux-${GOARCH}.tar.gz" | tar -C "$HOME/go-sdk" -xz \
-        || err "Go download failed"
-    export PATH="$HOME/go-sdk/go/bin:$PATH"
-fi
-log "Go ready: $(go version)"
+log "Firewall rules configured (UDP 53 & TCP 10086 OPEN) ✓"
 
-# ── 2. Build dnstt-server from the official module ──────────
-if [[ ! -x "$SERVER_BIN" ]]; then
-    info "Building dnstt-server from official source (takes ~20s)..."
-    GIT_TERMINAL_PROMPT=0 GOPROXY="https://proxy.golang.org,direct" GOBIN="$SLOWDNS_DIR" \
-        go install www.bamsoftware.com/git/dnstt.git/dnstt-server@latest 2>&1 | tee -a "$LOG_FILE"
-fi
-[[ -x "$SERVER_BIN" ]] || err "dnstt-server binary missing after build"
-log "Binary ready: $SERVER_BIN"
+# ── 2. Build VM Startup Script ──────────────────────────────
+info "Generating VM startup script (/tmp/slowdns-startup.sh)..."
 
-# ── 3. Generate dnstt keypair ───────────────────────────────
-banner "Generating dnstt Keys"
-PRIVATE_KEY="$KEYS_DIR/server.key"
-PUBLIC_KEY="$KEYS_DIR/server.pub"
-if [[ -s "$PRIVATE_KEY" && -s "$PUBLIC_KEY" ]]; then
-    warn "Keys already exist — reusing"
-else
-    "$SERVER_BIN" -gen-key -privkey-file "$PRIVATE_KEY" -pubkey-file "$PUBLIC_KEY" >>"$LOG_FILE" 2>&1 \
-        || err "Key generation failed"
-fi
-chmod 600 "$PRIVATE_KEY"
-DNSTT_PUBKEY=$(tr -d '[:space:]' < "$PUBLIC_KEY")
-log "Public key: $DNSTT_PUBKEY"
-
-# ── 4. Free port 53 safely without breaking system DNS ──────
-banner "Configuring Port 53 (UDP)"
-DNS_PORT=53
-V2RAY_PORT=10086
-
-if ss -ulnp 2>/dev/null | grep -q ":53 "; then
-    warn "UDP 53 is in use by system resolver — freeing port 53..."
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        sudo systemctl stop systemd-resolved 2>>"$LOG_FILE" || true
-        sudo systemctl disable systemd-resolved 2>>"$LOG_FILE" || true
-    fi
-    # Ensure /etc/resolv.conf has public DNS so server doesn't lose DNS resolution
-    if [[ -L /etc/resolv.conf ]] || grep -q "127.0.0.53" /etc/resolv.conf 2>/dev/null; then
-        sudo rm -f /etc/resolv.conf
-        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" | sudo tee /etc/resolv.conf >/dev/null
-        log "Updated /etc/resolv.conf to 8.8.8.8 / 1.1.1.1 ✓"
-    fi
-fi
-
-# ── 5. Start script & launch in screen ──────────────────────
-{
-    echo "DNSTT_PUBKEY=\"$DNSTT_PUBKEY\""
-    echo "SERVER_BIN=\"$SERVER_BIN\""
-    echo "PRIVATE_KEY=\"$PRIVATE_KEY\""
-    echo "DNS_PORT=\"$DNS_PORT\""
-} >> "$ENV_FILE"
-
-cat > "$INSTALL_DIR/start_slowdns.sh" << 'STARTSCRIPT'
+cat > /tmp/slowdns-startup.sh << 'STARTUP_EOF'
 #!/bin/bash
-source "$HOME/v2ray-slowdns-gcp/config/env.conf"
-echo "[dnstt] domain=$TUNNEL_DOMAIN udp=:$DNS_PORT -> 127.0.0.1:10086"
-exec sudo "$SERVER_BIN" -udp ":$DNS_PORT" -privkey-file "$PRIVATE_KEY" \
-    "$TUNNEL_DOMAIN" 127.0.0.1:10086 >> "$OUTPUT_DIR/slowdns.log" 2>&1
-STARTSCRIPT
-chmod +x "$INSTALL_DIR/start_slowdns.sh"
+set -e
+exec > /var/log/slowdns-setup.log 2>&1
+echo "=== [$(date)] SlowDNS + Xray VLESS VM Setup Starting ==="
 
-screen -S slowdns -X quit &>/dev/null || true
-sudo pkill -f "dnstt-server" &>/dev/null || true
-sleep 1
-screen -dmS slowdns bash "$INSTALL_DIR/start_slowdns.sh"
-sleep 2
-if ss -ulnp 2>/dev/null | grep -q ":$DNS_PORT "; then
-    log "dnstt-server listening on UDP :$DNS_PORT ✓"
-else
-    warn "dnstt-server not listening yet — check: tail $OUTPUT_DIR/slowdns.log"
+export HOME=/root
+export GOPATH=/root/go
+export GOMODCACHE=/root/go/pkg/mod
+export PATH=$PATH:/usr/local/go/bin
+export DEBIAN_FRONTEND=noninteractive
+
+# 1. Install unzip & curl if missing
+apt-get update -qq || true
+apt-get install -y -qq curl wget unzip || true
+
+# 2. Build speed-optimized dnstt-server from Google Go Proxy (no git auth needed)
+mkdir -p /usr/local/bin
+if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-server 2>/dev/null || echo 0) -lt 1000000 ]; then
+    echo "[*] Downloading Go 1.22.5..."
+    curl -fsSL https://go.dev/dl/go1.22.5.linux-amd64.tar.gz -o /tmp/go.tar.gz
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm -f /tmp/go.tar.gz
+
+    echo "[*] Downloading dnstt source from Go proxy..."
+    rm -rf /tmp/dnstt_zip /tmp/dnstt.zip
+    mkdir -p /tmp/dnstt_zip
+    curl -fsSL "https://proxy.golang.org/www.bamsoftware.com/git/dnstt.git/@v/v1.20260501.0.zip" -o /tmp/dnstt.zip
+    unzip -q /tmp/dnstt.zip -d /tmp/dnstt_zip
+    SRC_DIR="/tmp/dnstt_zip/www.bamsoftware.com/git/dnstt.git@v1.20260501.0"
+
+    echo "[*] Applying TurboTunnel high-speed patches..."
+    sed -i 's/const QueueSize = 128/const QueueSize = 2048/g' "$SRC_DIR/turbotunnel/consts.go"
+    sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 50 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
+    sed -i 's/ch := make(chan \*record, 100)/ch := make(chan \*record, 10000)/g' "$SRC_DIR/dnstt-server/main.go"
+
+    echo "[*] Compiling dnstt-server..."
+    cd "$SRC_DIR/dnstt-server"
+    GOPROXY="https://proxy.golang.org,direct" CGO_ENABLED=0 /usr/local/go/bin/go build -ldflags="-s -w" -o /usr/local/bin/dnstt-server .
+    chmod +x /usr/local/bin/dnstt-server
+    rm -rf /tmp/dnstt_zip /tmp/dnstt.zip /usr/local/go /root/go
+    echo "[OK] dnstt-server compiled!"
 fi
 
-banner "Phase 2 — Complete ✓"
-echo -e "  Tunnel domain : ${BOLD}$TUNNEL_DOMAIN${NC}"
-echo -e "  Forward to    : ${BOLD}127.0.0.1:$V2RAY_PORT${NC} (Xray VLESS)"
-echo ""
+# 3. Write SlowDNS Keys
+mkdir -p /etc/slowdns
+echo "PRIVKEY_PLACEHOLDER" > /etc/slowdns/server.key
+echo "PUBKEY_PLACEHOLDER" > /etc/slowdns/server.pub
+chmod 600 /etc/slowdns/server.key
+
+# 4. Install Xray-core & Configure VLESS
+echo "[*] Installing Xray-core..."
+mkdir -p /usr/local/bin /usr/local/etc/xray
+if [ ! -x /usr/local/bin/xray ]; then
+    curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+    unzip -qo /tmp/xray.zip -d /usr/local/bin/
+    chmod +x /usr/local/bin/xray
+    rm -f /tmp/xray.zip
+fi
+
+cat > /usr/local/etc/xray/config.json << 'XRAY_CONFIG'
+{
+  "log": { "loglevel": "warning" },
+  "dns": { "servers": ["8.8.8.8", "1.1.1.1"] },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": PORT_PLACEHOLDER,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "UUID_PLACEHOLDER" }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "none",
+        "sockopt": {
+          "tcpFastOpen": true,
+          "tcpNoDelay": true,
+          "tcpKeepAliveInterval": 15
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": { "domainStrategy": "UseIP" }
+    }
+  ]
+}
+XRAY_CONFIG
+
+cat > /etc/systemd/system/xray.service << 'XSVC_EOF'
+[Unit]
+Description=Xray VLESS Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+XSVC_EOF
+
+# 5. SlowDNS Systemd Service
+cat > /etc/systemd/system/slowdns.service << 'SVC_EOF'
+[Unit]
+Description=SlowDNS DNSTT Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/dnstt-server -udp :53 -privkey-file /etc/slowdns/server.key DOMAIN_PLACEHOLDER 127.0.0.1:PORT_PLACEHOLDER
+Restart=always
+RestartSec=3
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+SVC_EOF
+
+# 6. Kernel UDP & BBR Tuning
+cat > /etc/sysctl.d/99-slowdns-tune.conf << 'SYSCTL_EOF'
+net.core.rmem_max=67108864
+net.core.wmem_max=67108864
+net.core.rmem_default=33554432
+net.core.wmem_default=33554432
+net.core.netdev_max_backlog=100000
+net.core.somaxconn=65535
+net.ipv4.tcp_fastopen=3
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+SYSCTL_EOF
+sysctl -p /etc/sysctl.d/99-slowdns-tune.conf 2>/dev/null || true
+
+# 7. Free Port 53 safely & set public DNS
+systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable systemd-resolved 2>/dev/null || true
+rm -f /etc/resolv.conf
+printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
+
+# 8. Start Services
+systemctl daemon-reload
+systemctl enable xray && systemctl restart xray
+systemctl enable slowdns && systemctl restart slowdns
+
+touch /tmp/slowdns-setup-done
+echo "=== [$(date)] SETUP COMPLETE ==="
+STARTUP_EOF
+
+sed -i "s|PRIVKEY_PLACEHOLDER|$DNSTT_PRIVKEY|g" /tmp/slowdns-startup.sh
+sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
+sed -i "s|UUID_PLACEHOLDER|$V2RAY_UUID|g" /tmp/slowdns-startup.sh
+sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-startup.sh
+sed -i "s|DOMAIN_PLACEHOLDER|$TUNNEL_DOMAIN|g" /tmp/slowdns-startup.sh
+
+log "VM Startup script ready ✓"
