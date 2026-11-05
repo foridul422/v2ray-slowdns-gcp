@@ -21,31 +21,44 @@ banner() {
 
 banner "Phase 3: Creating GCP VM & Installing Server"
 
-# ── 1. Detect Singapore (SG) & Project Allowed Zones ────────
+# ── 1. Detect Allowed Zones & Singapore Priority ────────────
 DEFAULT_ZONE=$(gcloud config get-value compute/zone 2>/dev/null || true)
+DEFAULT_REGION=$(gcloud config get-value compute/region 2>/dev/null || true)
 [[ "$DEFAULT_ZONE" == "(unset)" ]] && DEFAULT_ZONE=""
+[[ "$DEFAULT_REGION" == "(unset)" ]] && DEFAULT_REGION=""
 
 META_ZONE=$(gcloud compute project-info describe --project="$PROJECT_ID" \
     --format="value(commonInstanceMetadata.items[google-compute-default-zone])" 2>/dev/null || true)
 META_REGION=$(gcloud compute project-info describe --project="$PROJECT_ID" \
     --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null || true)
 
-CANDIDATE_ZONES=(
-    # 1. Singapore (SG) zones first for lowest latency
-    "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
-    # 2. Other Asia zones (Mumbai, Taiwan, Tokyo)
-    "asia-south1-a" "asia-south1-b" "asia-east1-a" "asia-northeast1-a"
-)
+ALLOWED_LOCATIONS=$(gcloud resource-manager org-policies describe constraints/gcp.resourceLocations \
+    --project="$PROJECT_ID" \
+    --format="value(listPolicy.allowedValues)" 2>/dev/null || true)
 
-# 3. Project default zone/region (important if Qwiklabs restricts region)
+[[ -n "$META_ZONE" ]] && info "Project default zone: ${BOLD}$META_ZONE${NC}"
+[[ -n "$ALLOWED_LOCATIONS" ]] && info "Allowed locations policy: ${BOLD}$ALLOWED_LOCATIONS${NC}"
+
+CANDIDATE_ZONES=()
+
+# 1. If project has a specific default zone/region set by Qwiklabs, try that first
 [[ -n "$DEFAULT_ZONE" ]] && CANDIDATE_ZONES+=("$DEFAULT_ZONE")
 [[ -n "$META_ZONE" ]] && CANDIDATE_ZONES+=("$META_ZONE")
+[[ -n "$DEFAULT_REGION" ]] && CANDIDATE_ZONES+=("${DEFAULT_REGION}-a" "${DEFAULT_REGION}-b" "${DEFAULT_REGION}-c")
 [[ -n "$META_REGION" ]] && CANDIDATE_ZONES+=("${META_REGION}-a" "${META_REGION}-b" "${META_REGION}-c")
 
-# 4. Fallback US & Europe zones if Asia is restricted by project policy
+# 2. Singapore (SG) & Asia zones (if not blocked by org policy)
+if [[ -z "$ALLOWED_LOCATIONS" ]] || [[ "$ALLOWED_LOCATIONS" == *"asia"* ]]; then
+    CANDIDATE_ZONES+=(
+        "asia-southeast1-a" "asia-southeast1-b" "asia-southeast1-c"
+        "asia-south1-a" "asia-east1-a"
+    )
+fi
+
+# 3. US & Europe fallback zones
 CANDIDATE_ZONES+=(
     "us-central1-a" "us-central1-b" "us-central1-c" "us-central1-f"
-    "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b"
+    "us-east1-b" "us-east1-c" "us-east4-a" "us-west1-b" "us-west4-b"
     "europe-west1-b" "europe-west4-a"
 )
 
@@ -70,7 +83,6 @@ if [[ -n "$EXISTING_INFO" ]]; then
     CREATED_IP=""
 fi
 
-LAST_ERR=""
 for ZONE in "${TARGET_ZONES[@]}"; do
     info "Trying zone: ${BOLD}$ZONE${NC}..."
     for TYPE in "e2-medium" "e2-small" "e2-micro"; do
@@ -94,24 +106,17 @@ for ZONE in "${TARGET_ZONES[@]}"; do
             break 2
         fi
 
-        LAST_ERR=$(echo "$OUT" | grep -Ei "ERROR|quota|policy|denied|disabled|not found" | head -n 1 || true)
-
-        # If Compute Engine API is not enabled or permission denied for whole project, stop immediately
-        if echo "$OUT" | grep -qiE "API \[compute.googleapis.com\] not enabled|compute.instances.create.*denied|billing"; then
-            warn "Project restriction: $LAST_ERR"
-            break 2
-        fi
-
-        if ! echo "$OUT" | grep -qiE "quota|exceeded"; then
+        if ! echo "$OUT" | grep -qiE "quota|exceeded|RESOURCE_POOL_EXHAUSTED"; then
             break
         fi
     done
+
+    ERR_SNIP=$(echo "$OUT" | grep -A 1 -Ei "ERROR|denied|quota|policy|ZONE_RESOURCE|not found|disabled" | tr '\n' ' ' | sed 's/  */ /g' || true)
+    warn "Zone $ZONE skipped: ${ERR_SNIP:-not available}"
 done
 
 if [[ -z "$CREATED_IP" ]]; then
-    echo ""
-    warn "সর্বশেষ এরর: ${LAST_ERR:-Unknown error}"
-    err "এই GCP প্রজেক্টে ($PROJECT_ID) VM তৈরি করার পারমিশন নেই অথবা রিজিয়ন লক করা।"
+    err "GCP VM তৈরি করা যায়নি! উপরের এরর মেসেজটি দেখো (প্রজেক্টের টাইম শেষ বা Compute Engine পারমিশন নেই)।"
 fi
 
 {
