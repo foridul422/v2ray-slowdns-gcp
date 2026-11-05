@@ -2,7 +2,7 @@
 # ============================================================
 #  MASTER INSTALL SCRIPT — No pause, full auto
 #  V2Ray + SlowDNS Server on Google Cloud Shell
-#  Usage: bash install.sh
+#  Usage: bash install.sh [yourdomain.com]
 # ============================================================
 
 set -e
@@ -25,7 +25,7 @@ chmod +x "$SCRIPT_DIR"/*.sh
 #  PHASE 1: Environment Setup
 # ══════════════════════════════════════════
 phase_header "Phase 1/4 — Environment Setup"
-bash "$SCRIPT_DIR/01_setup_env.sh"
+bash "$SCRIPT_DIR/01_setup_env.sh" "$@"
 
 # ══════════════════════════════════════════
 #  PHASE 2: SlowDNS Install

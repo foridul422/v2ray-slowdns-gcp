@@ -1,8 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  Phase 2 — SlowDNS (dnstt) server install
-#  Uses the OFFICIAL dnstt source (www.bamsoftware.com) via the Go module proxy.
-#  dnstt keys are Noise/Curve25519 (hex) — NOT RSA.
+#  Uses the OFFICIAL dnstt source (www.bamsoftware.com) via Go module proxy.
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -28,24 +27,26 @@ SERVER_BIN="$SLOWDNS_DIR/dnstt-server"
 mkdir -p "$SLOWDNS_DIR"
 
 # ── 1. Go toolchain (no sudo needed) ────────────────────────
-if ! command -v go &>/dev/null; then
-    [[ -x "$HOME/go-sdk/go/bin/go" ]] || {
-        info "Installing Go into ~/go-sdk ..."
-        case "$ARCH_NAME" in amd64) GOARCH=amd64;; arm64) GOARCH=arm64;; *) err "Unsupported arch";; esac
-        mkdir -p "$HOME/go-sdk"
-        curl -fsSL "https://go.dev/dl/go1.22.5.linux-${GOARCH}.tar.gz" | tar -C "$HOME/go-sdk" -xz \
-            || err "Go download failed"
-    }
+info "Checking Go compiler..."
+if [[ -x "$HOME/go-sdk/go/bin/go" ]]; then
     export PATH="$HOME/go-sdk/go/bin:$PATH"
 fi
-log "Go: $(go version)"
+
+if ! command -v go &>/dev/null; then
+    info "Downloading Go 1.22.5 (takes ~10s)..."
+    case "$ARCH_NAME" in amd64) GOARCH=amd64;; arm64) GOARCH=arm64;; *) err "Unsupported arch";; esac
+    mkdir -p "$HOME/go-sdk"
+    curl -fL --progress-bar "https://go.dev/dl/go1.22.5.linux-${GOARCH}.tar.gz" | tar -C "$HOME/go-sdk" -xz \
+        || err "Go download failed"
+    export PATH="$HOME/go-sdk/go/bin:$PATH"
+fi
+log "Go ready: $(go version)"
 
 # ── 2. Build dnstt-server from the official module ──────────
 if [[ ! -x "$SERVER_BIN" ]]; then
-    info "Building dnstt-server (official source)..."
+    info "Building dnstt-server from official source (takes ~20s)..."
     GIT_TERMINAL_PROMPT=0 GOPROXY="https://proxy.golang.org,direct" GOBIN="$SLOWDNS_DIR" \
-        go install www.bamsoftware.com/git/dnstt.git/dnstt-server@latest 2>>"$LOG_FILE" \
-        || err "dnstt build failed — see $LOG_FILE"
+        go install www.bamsoftware.com/git/dnstt.git/dnstt-server@latest 2>&1 | tee -a "$LOG_FILE"
 fi
 [[ -x "$SERVER_BIN" ]] || err "dnstt-server binary missing after build"
 log "Binary ready: $SERVER_BIN"
@@ -64,9 +65,26 @@ chmod 600 "$PRIVATE_KEY"
 DNSTT_PUBKEY=$(tr -d '[:space:]' < "$PUBLIC_KEY")
 log "Public key: $DNSTT_PUBKEY"
 
-# ── 4. Start script ─────────────────────────────────────────
+# ── 4. Free port 53 safely without breaking system DNS ──────
+banner "Configuring Port 53 (UDP)"
 DNS_PORT=53
 V2RAY_PORT=10086
+
+if ss -ulnp 2>/dev/null | grep -q ":53 "; then
+    warn "UDP 53 is in use by system resolver — freeing port 53..."
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        sudo systemctl stop systemd-resolved 2>>"$LOG_FILE" || true
+        sudo systemctl disable systemd-resolved 2>>"$LOG_FILE" || true
+    fi
+    # Ensure /etc/resolv.conf has public DNS so server doesn't lose DNS resolution
+    if [[ -L /etc/resolv.conf ]] || grep -q "127.0.0.53" /etc/resolv.conf 2>/dev/null; then
+        sudo rm -f /etc/resolv.conf
+        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" | sudo tee /etc/resolv.conf >/dev/null
+        log "Updated /etc/resolv.conf to 8.8.8.8 / 1.1.1.1 ✓"
+    fi
+fi
+
+# ── 5. Start script & launch in screen ──────────────────────
 {
     echo "DNSTT_PUBKEY=\"$DNSTT_PUBKEY\""
     echo "SERVER_BIN=\"$SERVER_BIN\""
@@ -83,17 +101,9 @@ exec sudo "$SERVER_BIN" -udp ":$DNS_PORT" -privkey-file "$PRIVATE_KEY" \
 STARTSCRIPT
 chmod +x "$INSTALL_DIR/start_slowdns.sh"
 
-# ── 5. Free port 53 if needed, then launch in screen ────────
-if ss -ulnp 2>/dev/null | grep -q ":53 "; then
-    warn "UDP 53 already in use"
-    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        sudo systemctl stop systemd-resolved 2>>"$LOG_FILE" && log "Stopped systemd-resolved"
-    fi
-fi
-
 screen -S slowdns -X quit &>/dev/null || true
 screen -dmS slowdns bash "$INSTALL_DIR/start_slowdns.sh"
-sleep 3
+sleep 2
 if ss -ulnp 2>/dev/null | grep -q ":$DNS_PORT "; then
     log "dnstt-server listening on UDP :$DNS_PORT ✓"
 else

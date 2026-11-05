@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
 #  Phase 3 — Xray (VLESS) install & configure
-#  Xray-core is used because v2fly/v2ray-core v5 has no VLESS support.
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -35,9 +34,9 @@ esac
 
 if [[ ! -x "$V2RAY_DIR/xray" ]]; then
     XVER=$(curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r .tag_name 2>/dev/null)
-    XVER=${XVER:-v1.8.24}
-    info "Xray $XVER"
-    curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XVER}/Xray-linux-${XARCH}.zip" \
+    [[ -z "$XVER" || "$XVER" == "null" ]] && XVER="v1.8.24"
+    info "Downloading Xray $XVER..."
+    curl -fL --progress-bar -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XVER}/Xray-linux-${XARCH}.zip" \
         || err "Xray download failed"
     unzip -qo /tmp/xray.zip -d "$V2RAY_DIR" || err "unzip failed"
     chmod +x "$V2RAY_DIR/xray"
@@ -52,6 +51,9 @@ V2RAY_CONFIG="$CONFIG_DIR/xray_config.json"
 cat > "$V2RAY_CONFIG" << EOF
 {
   "log": { "loglevel": "warning" },
+  "dns": {
+    "servers": ["8.8.8.8", "1.1.1.1"]
+  },
   "inbounds": [{
     "listen": "0.0.0.0",
     "port": $V2RAY_PORT,
