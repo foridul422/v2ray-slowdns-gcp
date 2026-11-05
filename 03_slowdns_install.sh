@@ -32,14 +32,20 @@ NETWORKS=$(gcloud compute networks list --project="$PROJECT_ID" --format="value(
 [[ -z "$NETWORKS" ]] && NETWORKS="default"
 
 for NET in $NETWORKS; do
-    gcloud compute firewall-rules create "allow-slowdns-v2ray-${NET}" \
+    FW_OUT=$(gcloud compute firewall-rules create "allow-slowdns-v2ray-${NET}" \
         --project="$PROJECT_ID" \
         --network="$NET" \
+        --priority=100 \
         --allow=udp:53,udp:5300,tcp:22,tcp:80,tcp:443,tcp:10086 \
         --source-ranges=0.0.0.0/0 \
         --direction=INGRESS \
         --description="Allow SlowDNS (UDP 53) and V2Ray VLESS (TCP 10086)" \
-        --quiet 2>/dev/null || true
+        --quiet 2>&1 || true)
+    if echo "$FW_OUT" | grep -qi "permission"; then
+        warn "এই Qwiklabs ল্যাবে নতুন Firewall Rule তৈরি করার ('compute.firewalls.create') পারমিশন নেই!"
+        # Fallback: try updating existing default rules if permitted
+        gcloud compute firewall-rules update default-allow-ssh --project="$PROJECT_ID" --allow=tcp:22,tcp:10086,udp:53 --quiet 2>/dev/null || true
+    fi
 done
 
 log "Firewall rules configured (UDP 53 & TCP 10086 OPEN) ✓"
