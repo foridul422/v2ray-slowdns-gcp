@@ -86,9 +86,9 @@ if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-se
 
     echo "[*] Applying TurboTunnel high-speed & universal-domain patches..."
     sed -i 's/const QueueSize = 128/const QueueSize = 2048/g' "$SRC_DIR/turbotunnel/consts.go"
-    sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 100 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
+    sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 30 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
     sed -i 's/ch := make(chan \*record, 100)/ch := make(chan \*record, 10000)/g' "$SRC_DIR/dnstt-server/main.go"
-    sed -i 's/maxUDPPayload = 1280 - 40 - 8/maxUDPPayload = 512/g' "$SRC_DIR/dnstt-server/main.go"
+    sed -i 's/maxUDPPayload = 1280 - 40 - 8/maxUDPPayload = 1232/g' "$SRC_DIR/dnstt-server/main.go"
 
     python3 - "$SRC_DIR/dnstt-server/main.go" << 'PY_EOF'
 import sys
@@ -184,7 +184,7 @@ recv_replacement = """\t\t} else {
 assert recv_target in code
 code = code.replace(recv_target, recv_replacement, 1)
 
-# 3. KCP Turbo Mode tuned for high-jitter SIM DNS (nodelay=1, interval=40ms, resend=0, nc=1)
+# 3. KCP Turbo Mode tuned for high-jitter SIM DNS (nodelay=1, interval=20ms, resend=2, nc=1)
 kcp_target = """\t\tconn.SetNoDelay(
 \t\t\t0, // default nodelay
 \t\t\t0, // default interval
@@ -193,8 +193,8 @@ kcp_target = """\t\tconn.SetNoDelay(
 \t\t)"""
 kcp_replacement = """\t\tconn.SetNoDelay(
 \t\t\t1,  // nodelay=1 (turbo)
-\t\t\t40, // interval=40ms (safe for SIM DNS jitter)
-\t\t\t0,  // resend=0 (ignore DNS out-of-order reordering)
+\t\t\t20, // interval=20ms (safe for SIM DNS jitter)
+\t\t\t2,  // resend=2 (fast retransmit on 2 ack skips)
 \t\t\t1,  // nc=1 => congestion window off
 \t\t)"""
 if kcp_target in code:
@@ -285,7 +285,7 @@ LimitNOFILE=1000000
 WantedBy=multi-user.target
 XSVC_EOF
 
-# 5. SlowDNS Systemd Service (accepts ANY tunnel domain, MTU 512 for SIM compatibility!)
+# 5. SlowDNS Systemd Service (accepts ANY tunnel domain, MTU 1232 for EDNS0 high-speed!)
 cat > /etc/systemd/system/slowdns.service << 'SVC_EOF'
 [Unit]
 Description=SlowDNS DNSTT Server
@@ -294,7 +294,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/dnstt-server -udp :53 -mtu 512 -privkey-file /etc/slowdns/server.key t.local 127.0.0.1:PORT_PLACEHOLDER
+ExecStart=/usr/local/bin/dnstt-server -udp :53 -mtu 1232 -privkey-file /etc/slowdns/server.key t.local 127.0.0.1:PORT_PLACEHOLDER
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000

@@ -62,14 +62,14 @@ c = c.replace("const QueueSize = 128", "const QueueSize = 2048")
 with open(consts_path, "w") as f:
     f.write(c)
 
-# 2. Patch dnstt-client/dns.go (100ms fast poll, 64 pollLimit, 2x downstream burst, clean Close)
+# 2. Patch dnstt-client/dns.go (30ms fast poll, 128 pollLimit, 4x downstream burst, clean Close)
 dns_path = os.path.join(base, "dnstt-client/dns.go")
 with open(dns_path, "r") as f:
     d = f.read()
 
 d = d.replace(
     "\tinitPollDelay       = 500 * time.Millisecond\n\tmaxPollDelay        = 10 * time.Second\n\tpollDelayMultiplier = 2.0\n\n\t// A limit on the number of empty poll requests we may send in a burst\n\t// as a result of receiving data.\n\tpollLimit = 16",
-    "\tinitPollDelay       = 100 * time.Millisecond\n\tmaxPollDelay        = 2 * time.Second\n\tpollDelayMultiplier = 1.5\n\n\t// A limit on the number of empty poll requests we may send in a burst\n\t// as a result of receiving data.\n\tpollLimit = 64",
+    "\tinitPollDelay       = 30 * time.Millisecond\n\tmaxPollDelay        = 500 * time.Millisecond\n\tpollDelayMultiplier = 1.3\n\n\t// A limit on the number of empty poll requests we may send in a burst\n\t// as a result of receiving data.\n\tpollLimit = 128",
     1,
 )
 d = d.replace(
@@ -89,7 +89,7 @@ d = d.replace(
 )
 d = d.replace(
     "\t\tif any {\n\t\t\tselect {\n\t\t\tcase c.pollChan <- struct{}{}:\n\t\t\tdefault:\n\t\t\t}\n\t\t}",
-    "\t\tif any {\n\t\t\tfor i := 0; i < 2; i++ {\n\t\t\t\tselect {\n\t\t\t\tcase c.pollChan <- struct{}{}:\n\t\t\t\tdefault:\n\t\t\t\t}\n\t\t\t}\n\t\t}",
+    "\t\tif any {\n\t\t\tfor i := 0; i < 4; i++ {\n\t\t\t\tselect {\n\t\t\t\tcase c.pollChan <- struct{}{}:\n\t\t\t\tdefault:\n\t\t\t\t}\n\t\t\t}\n\t\t}",
     1,
 )
 d = d.replace(
@@ -300,8 +300,8 @@ new_run = """func runSession(pubkey []byte, domain dns.Name, mtu int, acceptChan
 	conn.SetStreamMode(true)
 	conn.SetNoDelay(
 		1,  // nodelay=1 (turbo)
-		40, // interval=40ms (matched with server)
-		0,  // resend=0 (ignore DNS out-of-order reordering)
+		20, // interval=20ms (was 40ms)
+		2,  // resend=2 (FAST RETRANSMIT ON 2 ACK SKIPS - no stalling on mobile jitter!)
 		1,  // nc=1 => congestion window off
 	)
 	conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
