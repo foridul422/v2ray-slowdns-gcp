@@ -102,6 +102,8 @@ STARTSCRIPT
 chmod +x "$INSTALL_DIR/start_slowdns.sh"
 
 screen -S slowdns -X quit &>/dev/null || true
+sudo pkill -f "dnstt-server" &>/dev/null || true
+sleep 1
 screen -dmS slowdns bash "$INSTALL_DIR/start_slowdns.sh"
 sleep 2
 if ss -ulnp 2>/dev/null | grep -q ":$DNS_PORT "; then

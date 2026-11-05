@@ -83,6 +83,8 @@ STARTSCRIPT
 chmod +x "$INSTALL_DIR/start_v2ray.sh"
 
 screen -S v2ray -X quit &>/dev/null || true
+pkill -f "$V2RAY_DIR/xray" &>/dev/null || true
+sleep 1
 screen -dmS v2ray bash "$INSTALL_DIR/start_v2ray.sh"
 sleep 2
 if ss -tlnp 2>/dev/null | grep -q ":$V2RAY_PORT "; then
