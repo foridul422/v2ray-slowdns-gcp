@@ -88,6 +88,8 @@ import sys
 p = sys.argv[1]
 with open(p, "r") as f:
     code = f.read()
+
+# 1. Universal domain-agnostic prefix extraction
 target = "\tprefix, ok := question.Name.TrimSuffix(domain)"
 replacement = """\tprefix, ok := question.Name.TrimSuffix(domain)
 \tif !ok {
@@ -120,8 +122,33 @@ replacement = """\tprefix, ok := question.Name.TrimSuffix(domain)
 \t\t}
 \t}"""
 assert target in code
+code = code.replace(target, replacement, 1)
+
+# 2. KCP Turbo Mode (nodelay=1, interval=10ms, resend=2, nc=1)
+kcp_target = """\t\tconn.SetNoDelay(
+\t\t\t0, // default nodelay
+\t\t\t0, // default interval
+\t\t\t0, // default resend
+\t\t\t1, // nc=1 => congestion window off
+\t\t)"""
+kcp_replacement = """\t\tconn.SetNoDelay(
+\t\t\t1,  // nodelay=1 (turbo)
+\t\t\t10, // interval=10ms (10x faster flush)
+\t\t\t2,  // resend=2 (fast retransmit)
+\t\t\t1,  // nc=1 => congestion window off
+\t\t)"""
+if kcp_target in code:
+    code = code.replace(kcp_target, kcp_replacement, 1)
+
+# 3. Larger smux receive/stream buffers (16MB / 4MB)
+smux_target = "\tsmuxConfig.MaxStreamBuffer = 1 * 1024 * 1024 // default is 65536"
+smux_replacement = """\tsmuxConfig.MaxReceiveBuffer = 16 * 1024 * 1024
+\tsmuxConfig.MaxStreamBuffer = 4 * 1024 * 1024"""
+if smux_target in code:
+    code = code.replace(smux_target, smux_replacement, 1)
+
 with open(p, "w") as f:
-    f.write(code.replace(target, replacement, 1))
+    f.write(code)
 PY_EOF
 
     echo "[*] Compiling dnstt-server..."
@@ -246,7 +273,7 @@ echo "=== [$(date)] SETUP COMPLETE ==="
 STARTUP_EOF
 
 sed -i "s|PRIVKEY_PLACEHOLDER|$DNSTT_PRIVKEY|g" /tmp/slowdns-startup.sh
-sed -i "s|PUBKEY_PLACEHOLDER|$PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh 2>/dev/null || sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
+sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
 sed -i "s|UUID_PLACEHOLDER|$V2RAY_UUID|g" /tmp/slowdns-startup.sh
 sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-startup.sh
 
