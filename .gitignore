@@ -1,0 +1,8 @@
+output/
+*.log
+*.pid
+config/env.conf
+config/v2ray_config.json
+output/keys/
+slowdns/
+v2ray/
