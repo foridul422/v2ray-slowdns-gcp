@@ -16,6 +16,9 @@ VLESS_SLOWDNS_LINK="vless://${V2RAY_UUID}@127.0.0.1:${V2RAY_PORT}?encryption=non
 # 2) For Direct TCP connection (V2RayNG / NekoBox without SlowDNS): address is VM Public IP
 VLESS_DIRECT_LINK="vless://${V2RAY_UUID}@${PUBLIC_IP}:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-Direct-VLESS"
 
+# 3) For Termux (Turbo dnstt-client) + V2RayNG / NekoBox Chaining
+TERMUX_CMD="curl -fsSL https://raw.githubusercontent.com/foridul422/v2ray-slowdns-gcp/main/termux_slowdns.sh -o ~/termux_slowdns.sh && bash ~/termux_slowdns.sh ${DNSTT_PUBKEY} YOUR_NS_DOMAIN ${V2RAY_UUID}"
+
 OUTPUT_FILE="$OUTPUT_DIR/client_config.txt"
 cat > "$OUTPUT_FILE" << EOF
 ==================== GCP V2Ray (VLESS) + SlowDNS ====================
@@ -42,6 +45,9 @@ VLESS Port  : $V2RAY_PORT
 
 4) VLESS Link (Direct IP — $PUBLIC_IP:$V2RAY_PORT):
    $VLESS_DIRECT_LINK
+
+5) Termux (dnstt-client) + V2RayNG / NekoBox Chaining Command:
+   $TERMUX_CMD
 =====================================================================
 EOF
 
@@ -56,13 +62,17 @@ echo -e "   ${CYAN}Zone       :${NC}  ${YELLOW}${DEPLOYED_ZONE:-us-central1}${NC
 echo -e "   ${CYAN}Server IP  :${NC}  ${BOLD}${GREEN}$PUBLIC_IP${NC}"
 echo -e "   ${CYAN}Public Key :${NC}  ${BOLD}${YELLOW}$DNSTT_PUBKEY${NC}"
 echo ""
-echo -e "${BOLD}🔗 2. VLESS Link (SlowDNS Tunnel — HTTP Custom / Netmod এর জন্য):${NC}"
+echo -e "${BOLD}🔗 2. VLESS Link (SlowDNS Tunnel — Termux / HTTP Custom / Netmod):${NC}"
 echo -e "   ${YELLOW}$VLESS_SLOWDNS_LINK${NC}"
 echo ""
 echo -e "${BOLD}🔗 3. VLESS Link (Direct IP — V2RayNG / NekoBox ডিরেক্ট কানেক্টের জন্য):${NC}"
 echo -e "   ${YELLOW}$VLESS_DIRECT_LINK${NC}"
 echo ""
-echo -e "${BOLD}🌐 4. DNS Record (এখন তোমার যেকোনো Domain-এ এই IP পয়েন্ট করো):${NC}"
+echo -e "${BOLD}📱 4. Termux + V2RayNG / NekoBox (Turbo SlowDNS 1-Click Command):${NC}"
+echo -e "   ${CYAN}(YOUR_NS_DOMAIN এর জায়গায় তোমার NS ডোমেইন বসিয়ে Termux-এ পেস্ট করো)${NC}"
+echo -e "   ${YELLOW}$TERMUX_CMD${NC}"
+echo ""
+echo -e "${BOLD}🌐 5. DNS Record (এখন তোমার যেকোনো Domain-এ এই IP পয়েন্ট করো):${NC}"
 echo -e "   ${CYAN}A Record   :${NC}  Name: ${YELLOW}ns1${NC}     →  IPv4: ${BOLD}${GREEN}$PUBLIC_IP${NC}  ${YELLOW}(DNS Only)${NC}"
 echo -e "   ${CYAN}NS Record  :${NC}  Name: ${YELLOW}tunnel${NC}  →  Target: ${YELLOW}ns1.yourdomain.com${NC}"
 echo ""

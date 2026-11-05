@@ -138,7 +138,7 @@ replacement = """\tresp.Flags |= 0x0400 // AA = 1 (Always authoritative for dele
 assert target in code
 code = code.replace(target, replacement, 1)
 
-# 2. Return AA=1 NOERROR (NODATA) for QNAME minimization / non-tunnel queries so ISP SIM DNS resolvers never block the zone
+# 2. Return AA=1 NOERROR with valid NS/SOA records for zone apex & QNAME minimization so 8.8.8.8 never SERVFAILs after TTL expiry
 recv_target = """\t\t} else {
 \t\t\t// Payload is not long enough to contain a ClientID.
 \t\t\tif resp != nil && resp.Rcode() == dns.RcodeNoError {
@@ -148,7 +148,27 @@ recv_target = """\t\t} else {
 \t\t}"""
 recv_replacement = """\t\t} else {
 \t\t\tif resp != nil && (resp.Rcode() == dns.RcodeNoError || resp.Rcode() == dns.RcodeNameError) {
-\t\t\t\tresp.Flags = (resp.Flags &^ 0x000f) | 0x0400 // QR=1, AA=1, RCODE=0 (NOERROR NODATA for QNAME minimization)
+\t\t\t\tresp.Flags = (resp.Flags &^ 0x000f) | 0x0400 // QR=1, AA=1, RCODE=0
+\t\t\t\tif len(resp.Question) == 1 {
+\t\t\t\t\tq := resp.Question[0]
+\t\t\t\t\tvar nameBuf bytes.Buffer
+\t\t\t\t\tfor _, lbl := range q.Name {
+\t\t\t\t\t\tnameBuf.WriteByte(byte(len(lbl)))
+\t\t\t\t\t\tnameBuf.Write(lbl)
+\t\t\t\t\t}
+\t\t\t\t\tnameBuf.WriteByte(0)
+\t\t\t\t\tvar soaBuf bytes.Buffer
+\t\t\t\t\tsoaBuf.Write(nameBuf.Bytes())
+\t\t\t\t\tsoaBuf.Write(nameBuf.Bytes())
+\t\t\t\t\tsoaBuf.Write([]byte{0, 0, 0, 1, 0, 0, 14, 16, 0, 0, 2, 88, 0, 1, 81, 128, 0, 0, 0, 60})
+\t\t\t\t\tif q.Type == 2 {
+\t\t\t\t\t\tresp.Answer = []dns.RR{{Name: q.Name, Type: 2, Class: dns.ClassIN, TTL: 3600, Data: nameBuf.Bytes()}}
+\t\t\t\t\t} else if q.Type == 6 {
+\t\t\t\t\t\tresp.Answer = []dns.RR{{Name: q.Name, Type: 6, Class: dns.ClassIN, TTL: 3600, Data: soaBuf.Bytes()}}
+\t\t\t\t\t} else {
+\t\t\t\t\t\tresp.Authority = []dns.RR{{Name: q.Name, Type: 6, Class: dns.ClassIN, TTL: 60, Data: soaBuf.Bytes()}}
+\t\t\t\t\t}
+\t\t\t\t}
 \t\t\t\tif wire, err := resp.WireFormat(); err == nil {
 \t\t\t\t\tdnsConn.WriteTo(wire, addr)
 \t\t\t\t}
