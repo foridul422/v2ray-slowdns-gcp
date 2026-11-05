@@ -88,7 +88,7 @@ if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-se
     sed -i 's/const QueueSize = 128/const QueueSize = 2048/g' "$SRC_DIR/turbotunnel/consts.go"
     sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 30 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
     sed -i 's/ch := make(chan \*record, 100)/ch := make(chan \*record, 10000)/g' "$SRC_DIR/dnstt-server/main.go"
-    sed -i 's/maxUDPPayload = 1280 - 40 - 8/maxUDPPayload = 1232/g' "$SRC_DIR/dnstt-server/main.go"
+    sed -i 's/maxUDPPayload = 1280 - 40 - 8/maxUDPPayload = 512/g' "$SRC_DIR/dnstt-server/main.go"
 
     python3 - "$SRC_DIR/dnstt-server/main.go" << 'PY_EOF'
 import sys
@@ -285,7 +285,7 @@ LimitNOFILE=1000000
 WantedBy=multi-user.target
 XSVC_EOF
 
-# 5. SlowDNS Systemd Service (accepts ANY tunnel domain, MTU 1232 for EDNS0 high-speed!)
+# 5. SlowDNS Systemd Service (accepts ANY tunnel domain, MTU 512 for full SIM compatibility)
 cat > /etc/systemd/system/slowdns.service << 'SVC_EOF'
 [Unit]
 Description=SlowDNS DNSTT Server
@@ -294,7 +294,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/dnstt-server -udp :53 -mtu 1232 -privkey-file /etc/slowdns/server.key t.local 127.0.0.1:PORT_PLACEHOLDER
+ExecStart=/usr/local/bin/dnstt-server -udp :53 -mtu 512 -privkey-file /etc/slowdns/server.key t.local 127.0.0.1:PORT_PLACEHOLDER
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000

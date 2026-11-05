@@ -3,7 +3,8 @@
 #  Termux Turbo dnstt-client + V2RayNG / NekoBox Chaining Setup & Runner
 #  Features:
 #   - 8-Socket Multi-Resolver UDP Striping (8.8.8.8:53 + 8.8.4.4:53)
-#   - KCP Turbo Mode (nodelay=1, interval=40ms, resend=0, nc=1)
+#   - 8x Parallel Pipelined Polling Workers (Massive downstream boost)
+#   - KCP Turbo Mode (nodelay=1, interval=20ms, resend=2, nc=1)
 #   - 16MB/4MB smux Buffers & QueueSize=2048 (Matched with GCP Server)
 #   - 15s Handshake Timeout + Auto-Healing Session Reconnect (Never disconnects)
 # ==============================================================================
@@ -62,16 +63,11 @@ c = c.replace("const QueueSize = 128", "const QueueSize = 2048")
 with open(consts_path, "w") as f:
     f.write(c)
 
-# 2. Patch dnstt-client/dns.go (30ms fast poll, 128 pollLimit, 4x downstream burst, clean Close)
+# 2. Patch dnstt-client/dns.go (8x Parallel Polling Workers + Burst Pipeline)
 dns_path = os.path.join(base, "dnstt-client/dns.go")
 with open(dns_path, "r") as f:
     d = f.read()
 
-d = d.replace(
-    "\tinitPollDelay       = 500 * time.Millisecond\n\tmaxPollDelay        = 10 * time.Second\n\tpollDelayMultiplier = 2.0\n\n\t// A limit on the number of empty poll requests we may send in a burst\n\t// as a result of receiving data.\n\tpollLimit = 16",
-    "\tinitPollDelay       = 30 * time.Millisecond\n\tmaxPollDelay        = 500 * time.Millisecond\n\tpollDelayMultiplier = 1.3\n\n\t// A limit on the number of empty poll requests we may send in a burst\n\t// as a result of receiving data.\n\tpollLimit = 128",
-    1,
-)
 d = d.replace(
     "\tpollChan chan struct{}\n\t// QueuePacketConn",
     "\tpollChan chan struct{}\n\tclosed   chan struct{}\n\t// QueuePacketConn",
@@ -79,7 +75,7 @@ d = d.replace(
 )
 d = d.replace(
     "\t\tpollChan:        make(chan struct{}, pollLimit),\n\t\tQueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),",
-    "\t\tpollChan:        make(chan struct{}, pollLimit),\n\t\tclosed:          make(chan struct{}),\n\t\tQueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),",
+    "\t\tpollChan:        make(chan struct{}, 512),\n\t\tclosed:          make(chan struct{}),\n\t\tQueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),",
     1,
 )
 d = d.replace(
@@ -92,11 +88,108 @@ d = d.replace(
     "\t\tif any {\n\t\t\tfor i := 0; i < 4; i++ {\n\t\t\t\tselect {\n\t\t\t\tcase c.pollChan <- struct{}{}:\n\t\t\t\tdefault:\n\t\t\t\t}\n\t\t\t}\n\t\t}",
     1,
 )
-d = d.replace(
-    "\t\tselect {\n\t\tcase p = <-outgoing:\n\t\tdefault:\n\t\t\tselect {\n\t\t\tcase p = <-outgoing:\n\t\t\tcase <-c.pollChan:\n\t\t\tcase <-pollTimer.C:\n\t\t\t\tpollTimerExpired = true\n\t\t\t}\n\t\t}",
-    "\t\tselect {\n\t\tcase <-c.closed:\n\t\t\treturn nil\n\t\tcase p = <-outgoing:\n\t\tdefault:\n\t\t\tselect {\n\t\t\tcase <-c.closed:\n\t\t\t\treturn nil\n\t\t\tcase p = <-outgoing:\n\t\t\tcase <-c.pollChan:\n\t\t\tcase <-pollTimer.C:\n\t\t\t\tpollTimerExpired = true\n\t\t\t}\n\t\t}",
-    1,
-)
+
+old_send_loop = """func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
+	pollDelay := initPollDelay
+	pollTimer := time.NewTimer(pollDelay)
+	for {
+		var p []byte
+		outgoing := c.QueuePacketConn.OutgoingQueue(addr)
+		pollTimerExpired := false
+		// Prioritize sending an actual data packet from outgoing. Only
+		// consider a poll when outgoing is empty.
+		select {
+		case p = <-outgoing:
+		default:
+			select {
+			case p = <-outgoing:
+			case <-c.pollChan:
+			case <-pollTimer.C:
+				pollTimerExpired = true
+			}
+		}
+
+		if len(p) > 0 {
+			// A data-carrying packet displaces one pending poll
+			// opportunity, if any.
+			select {
+			case <-c.pollChan:
+			default:
+			}
+		}
+
+		if pollTimerExpired {
+			// We're polling because it's been a while since we last
+			// polled. Increase the poll delay.
+			pollDelay = time.Duration(float64(pollDelay) * pollDelayMultiplier)
+			if pollDelay > maxPollDelay {
+				pollDelay = maxPollDelay
+			}
+		} else {
+			// We're sending an actual data packet, or we're polling
+			// in response to a received packet. Reset the poll
+			// delay to initial.
+			if !pollTimer.Stop() {
+				<-pollTimer.C
+			}
+			pollDelay = initPollDelay
+		}
+		pollTimer.Reset(pollDelay)
+
+		// Unlike in the server, in the client we assume that because
+		// the data capacity of queries is so limited, it's not worth
+		// trying to send more than one packet per query.
+		err := c.send(transport, p, addr)
+		if err != nil {
+			log.Printf("send: %v", err)
+			continue
+		}
+	}
+}"""
+
+new_send_loop = """func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
+	outgoing := c.QueuePacketConn.OutgoingQueue(addr)
+
+	// 1. Dedicated ultra-fast goroutine for outgoing data & KCP ACKs
+	go func() {
+		for {
+			select {
+			case <-c.closed:
+				return
+			case p, ok := <-outgoing:
+				if !ok {
+					return
+				}
+				_ = c.send(transport, p, addr)
+			}
+		}
+	}()
+
+	// 2. 8x Parallel Pipelined Polling Workers across 8 UDP sockets
+	for w := 0; w < 8; w++ {
+		go func(workerID int) {
+			ticker := time.NewTicker(time.Duration(20+workerID*5) * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-c.closed:
+					return
+				case <-c.pollChan:
+					_ = c.send(transport, nil, addr)
+				case <-ticker.C:
+					_ = c.send(transport, nil, addr)
+				}
+			}
+		}(w)
+	}
+
+	<-c.closed
+	return nil
+}"""
+
+assert old_send_loop in d
+d = d.replace(old_send_loop, new_send_loop, 1)
+
 with open(dns_path, "w") as f:
     f.write(d)
 
