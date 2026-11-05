@@ -19,6 +19,7 @@ phase_header() {
     echo ""
 }
 
+git -C "$SCRIPT_DIR" config core.fileMode false 2>/dev/null || true
 chmod +x "$SCRIPT_DIR"/*.sh
 
 # ══════════════════════════════════════════
