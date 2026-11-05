@@ -147,6 +147,26 @@ smux_replacement = """\tsmuxConfig.MaxReceiveBuffer = 16 * 1024 * 1024
 if smux_target in code:
     code = code.replace(smux_target, smux_replacement, 1)
 
+# 4. Run 4 parallel sendLoop workers for higher burst throughput
+sendloop_target = """\tgo func() {
+\t\tdefer done()
+\t\terr := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
+\t\tif err != nil {
+\t\t\tlog.Printf("sendLoop: %v", err)
+\t\t}
+\t}()"""
+sendloop_replacement = """\tfor i := 0; i < 4; i++ {
+\t\tgo func() {
+\t\t\tdefer done()
+\t\t\terr := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
+\t\t\tif err != nil {
+\t\t\t\tlog.Printf("sendLoop: %v", err)
+\t\t\t}
+\t\t}()
+\t}"""
+if sendloop_target in code:
+    code = code.replace(sendloop_target, sendloop_replacement, 1)
+
 with open(p, "w") as f:
     f.write(code)
 PY_EOF
