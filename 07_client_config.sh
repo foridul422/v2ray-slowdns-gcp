@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-#  Phase 4 — Final Output: VM IP + NS Records + Public Key + VLESS Links
+#  Phase 4 — Final Output (Asked ONLY AFTER Server is Ready!)
+#  VM IP + Domain NS Records + Public Key + VLESS Links
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -8,6 +9,23 @@ ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
 source "$ENV_FILE"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+# Ask for domain ONLY NOW, after VM creation & server installation are 100% finished
+while read -r -t 0.1 -n 10000 _ </dev/tty 2>/dev/null; do :; done
+
+USER_DOMAIN="${1:-}"
+if [[ -z "$USER_DOMAIN" ]]; then
+    echo ""
+    echo -ne "${BOLD}${YELLOW}👉 সার্ভার তৈরি সম্পন্ন! এখন তোমার Domain নাম লেখো (যেমন: example.com): ${NC}"
+    read -r USER_DOMAIN </dev/tty
+    USER_DOMAIN=$(echo "$USER_DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's|^https\?://||; s|^www\.||; s|/.*||; s|[[:space:]]||g')
+fi
+[[ -z "$USER_DOMAIN" ]] && USER_DOMAIN="yourdomain.com"
+
+NS_SUB="ns1"
+TUNNEL_SUB="tunnel"
+NS_DOMAIN="${NS_SUB}.${USER_DOMAIN}"
+TUNNEL_DOMAIN="${TUNNEL_SUB}.${USER_DOMAIN}"
 
 # 1) For SlowDNS Tunnel apps (HTTP Custom / Netmod / DarkTunnel): address MUST be 127.0.0.1:10086
 VLESS_SLOWDNS_LINK="vless://${V2RAY_UUID}@127.0.0.1:${V2RAY_PORT}?encryption=none&security=none&type=tcp#GCP-SlowDNS-VLESS"

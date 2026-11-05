@@ -2,7 +2,7 @@
 # ============================================================
 #  Phase 2 — GCP Firewall & VM Startup Script Builder
 #  Opens UDP 53 & TCP 10086 in GCP VPC Firewall and prepares
-#  high-speed dnstt-server + Xray VLESS startup script for the VM
+#  universal domain-agnostic dnstt-server + Xray VLESS startup
 # ============================================================
 
 ENV_FILE="$HOME/v2ray-slowdns-gcp/config/env.conf"
@@ -59,11 +59,11 @@ export GOMODCACHE=/root/go/pkg/mod
 export PATH=$PATH:/usr/local/go/bin
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Install unzip & curl if missing
+# 1. Install unzip, curl & python3 if missing
 apt-get update -qq || true
-apt-get install -y -qq curl wget unzip || true
+apt-get install -y -qq curl wget unzip python3 || true
 
-# 2. Build speed-optimized dnstt-server from Google Go Proxy (no git auth needed)
+# 2. Build speed-optimized, universal domain-agnostic dnstt-server
 mkdir -p /usr/local/bin
 if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-server 2>/dev/null || echo 0) -lt 1000000 ]; then
     echo "[*] Downloading Go 1.22.5..."
@@ -78,10 +78,51 @@ if [ ! -x /usr/local/bin/dnstt-server ] || [ $(stat -c%s /usr/local/bin/dnstt-se
     unzip -q /tmp/dnstt.zip -d /tmp/dnstt_zip
     SRC_DIR="/tmp/dnstt_zip/www.bamsoftware.com/git/dnstt.git@v1.20260501.0"
 
-    echo "[*] Applying TurboTunnel high-speed patches..."
+    echo "[*] Applying TurboTunnel high-speed & universal-domain patches..."
     sed -i 's/const QueueSize = 128/const QueueSize = 2048/g' "$SRC_DIR/turbotunnel/consts.go"
     sed -i 's/maxResponseDelay = 1 \* time.Second/maxResponseDelay = 50 \* time.Millisecond/g' "$SRC_DIR/dnstt-server/main.go"
     sed -i 's/ch := make(chan \*record, 100)/ch := make(chan \*record, 10000)/g' "$SRC_DIR/dnstt-server/main.go"
+
+    python3 - "$SRC_DIR/dnstt-server/main.go" << 'PY_EOF'
+import sys
+p = sys.argv[1]
+with open(p, "r") as f:
+    code = f.read()
+target = "\tprefix, ok := question.Name.TrimSuffix(domain)"
+replacement = """\tprefix, ok := question.Name.TrimSuffix(domain)
+\tif !ok {
+\t\tfor i := 1; i < len(question.Name); i++ {
+\t\t\tcand := question.Name[:i]
+\t\t\tif i > 1 && len(cand[i-2]) != 63 {
+\t\t\t\tbreak
+\t\t\t}
+\t\t\tenc := bytes.ToUpper(bytes.Join(cand, nil))
+\t\t\tbuf := make([]byte, base32Encoding.DecodedLen(len(enc)))
+\t\t\tn, err := base32Encoding.Decode(buf, enc)
+\t\t\tif err != nil || n < 9 || buf[8] < 224 {
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\tpos := 8
+\t\t\tfor pos < n {
+\t\t\t\tb := int(buf[pos])
+\t\t\t\tpos++
+\t\t\t\tif b >= 224 {
+\t\t\t\t\tpos += b - 224
+\t\t\t\t} else {
+\t\t\t\t\tpos += b
+\t\t\t\t}
+\t\t\t}
+\t\t\tif pos == n {
+\t\t\t\tprefix = cand
+\t\t\t\tok = true
+\t\t\t\tbreak
+\t\t\t}
+\t\t}
+\t}"""
+assert target in code
+with open(p, "w") as f:
+    f.write(code.replace(target, replacement, 1))
+PY_EOF
 
     echo "[*] Compiling dnstt-server..."
     cd "$SRC_DIR/dnstt-server"
@@ -157,7 +198,7 @@ LimitNOFILE=1000000
 WantedBy=multi-user.target
 XSVC_EOF
 
-# 5. SlowDNS Systemd Service
+# 5. SlowDNS Systemd Service (accepts ANY tunnel domain!)
 cat > /etc/systemd/system/slowdns.service << 'SVC_EOF'
 [Unit]
 Description=SlowDNS DNSTT Server
@@ -166,7 +207,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/dnstt-server -udp :53 -privkey-file /etc/slowdns/server.key DOMAIN_PLACEHOLDER 127.0.0.1:PORT_PLACEHOLDER
+ExecStart=/usr/local/bin/dnstt-server -udp :53 -privkey-file /etc/slowdns/server.key t.local 127.0.0.1:PORT_PLACEHOLDER
 Restart=always
 RestartSec=3
 LimitNOFILE=1000000
@@ -205,9 +246,8 @@ echo "=== [$(date)] SETUP COMPLETE ==="
 STARTUP_EOF
 
 sed -i "s|PRIVKEY_PLACEHOLDER|$DNSTT_PRIVKEY|g" /tmp/slowdns-startup.sh
-sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
+sed -i "s|PUBKEY_PLACEHOLDER|$PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh 2>/dev/null || sed -i "s|PUBKEY_PLACEHOLDER|$DNSTT_PUBKEY|g" /tmp/slowdns-startup.sh
 sed -i "s|UUID_PLACEHOLDER|$V2RAY_UUID|g" /tmp/slowdns-startup.sh
 sed -i "s|PORT_PLACEHOLDER|$V2RAY_PORT|g" /tmp/slowdns-startup.sh
-sed -i "s|DOMAIN_PLACEHOLDER|$TUNNEL_DOMAIN|g" /tmp/slowdns-startup.sh
 
 log "VM Startup script ready ✓"

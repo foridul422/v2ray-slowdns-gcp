@@ -2,7 +2,7 @@
 # ============================================================
 #  MASTER INSTALL SCRIPT — GCP VM Auto-Deployer
 #  V2Ray (VLESS) + SlowDNS Server via Google Cloud Shell
-#  Usage: bash install.sh [yourdomain.com]
+#  Usage: bash install.sh
 # ============================================================
 
 set -e
@@ -22,10 +22,10 @@ phase_header() {
 chmod +x "$SCRIPT_DIR"/*.sh
 
 # ══════════════════════════════════════════
-#  PHASE 1: Domain, Project & Key Setup
+#  PHASE 1: Project & Key Setup
 # ══════════════════════════════════════════
-phase_header "Phase 1/4 — Domain & Key Setup"
-bash "$SCRIPT_DIR/01_setup_env.sh" "$@"
+phase_header "Phase 1/4 — Project & Key Setup"
+bash "$SCRIPT_DIR/01_setup_env.sh"
 
 # ══════════════════════════════════════════
 #  PHASE 2: Firewall & Startup Script
@@ -40,10 +40,10 @@ phase_header "Phase 3/4 — Creating GCP VM & Installing Server"
 bash "$SCRIPT_DIR/04_v2ray_install.sh"
 
 # ══════════════════════════════════════════
-#  PHASE 4: Generate Client Config & Output
+#  PHASE 4: Domain & Final Client Config
 # ══════════════════════════════════════════
-phase_header "Phase 4/4 — Generating Final Config"
-bash "$SCRIPT_DIR/07_client_config.sh"
+phase_header "Phase 4/4 — Final Config & Domain Output"
+bash "$SCRIPT_DIR/07_client_config.sh" "$@"
 
 echo ""
 echo -e "${BOLD}${GREEN}🎉 সব complete! এখন উপরের IP-তে তোমার NS A-record পয়েন্ট করে কানেক্ট করো।${NC}"

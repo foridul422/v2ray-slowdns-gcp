@@ -143,10 +143,17 @@ if [[ -z "$CREATED_IP" ]]; then
 
             # Stop immediately if this Qwiklabs lab does not have Compute Engine permission
             if echo "$OUT" | grep -qi "Required 'compute.instances.create' permission"; then
+                ACTIVE_ACC=$(gcloud config get-value account 2>/dev/null || true)
+                USER_ROLES=$(gcloud projects get-iam-policy "$PROJECT_ID" \
+                    --flatten="bindings[].members" \
+                    --filter="bindings.members:$ACTIVE_ACC" \
+                    --format="value(bindings.role)" 2>/dev/null | tr '\n' ' ' || true)
                 echo ""
+                warn "Account : ${ACTIVE_ACC:-unknown}"
+                warn "Project : $PROJECT_ID"
+                warn "Roles   : ${USER_ROLES:-NONE (ল্যাবের মেয়াদ শেষ বা পারমিশন নেই)}"
                 warn "এই প্রজেক্টে ($PROJECT_ID) নতুন VM তৈরি করার ('compute.instances.create') পারমিশন নেই এবং কোনো চালু VM-ও নেই!"
-                warn "কারণ: তুমি সম্ভবত একটি Cloud Run ল্যাব ওপেন করেছো অথবা ল্যাবের সময় (Timer) শেষ হয়ে গেছে।"
-                echo -e "${BOLD}${GREEN}💡 সমাধান:${NC} Qwiklabs-এ যেকোনো ${BOLD}Compute Engine / Virtual Machine${NC} ল্যাব (যেমন: 'A Tour of Google Cloud Hands-on Labs' বা 'Creating a Virtual Machine') স্টার্ট করে এই কমান্ডটি চালাও।"
+                echo -e "${BOLD}${GREEN}💡 সমাধান:${NC} Qwiklabs-এ যেকোনো ${BOLD}Compute Engine / Virtual Machine${NC} ল্যাব স্টার্ট করে নতুন Cloud Shell ওপেন করে এই কমান্ডটি চালাও।"
                 err "Compute Engine পারমিশনযুক্ত ল্যাব স্টার্ট করে আবার চেষ্টা করো।"
             fi
 

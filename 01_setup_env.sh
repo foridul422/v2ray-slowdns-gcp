@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  Phase 1 — Environment, Domain & Key Generation
+#  Phase 1 — Environment, GCP Project & Key Generation
 #  V2Ray (VLESS) + SlowDNS GCP VM Auto-Deployer
 # ============================================================
 
@@ -37,32 +37,7 @@ cat << 'EOF'
 EOF
 echo -e "${NC}"
 
-# ── 1. Ask Domain FIRST ─────────────────────────────────────
-banner "Step 1: Domain Configuration"
-
-while read -r -t 0.1 -n 10000 _ </dev/tty 2>/dev/null; do :; done
-
-USER_DOMAIN="${1:-}"
-while [[ -z "$USER_DOMAIN" ]]; do
-    echo -ne "${BOLD}${YELLOW}👉 তোমার Domain নাম লেখো (যেমন: example.com): ${NC}"
-    read -r USER_DOMAIN </dev/tty
-    USER_DOMAIN=$(echo "$USER_DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's|^https\?://||; s|^www\.||; s|/.*||; s|[[:space:]]||g')
-    if [[ -z "$USER_DOMAIN" || "$USER_DOMAIN" != *.* ]]; then
-        warn "সঠিক Domain নাম দাও! (যেমন: mydomain.com)"
-        USER_DOMAIN=""
-    fi
-done
-
-TUNNEL_SUB="tunnel"
-NS_SUB="ns1"
-TUNNEL_DOMAIN="${TUNNEL_SUB}.${USER_DOMAIN}"
-NS_DOMAIN="${NS_SUB}.${USER_DOMAIN}"
-
-log "Domain     : ${BOLD}$USER_DOMAIN${NC}"
-log "Tunnel NS  : ${BOLD}$TUNNEL_DOMAIN${NC}"
-log "NS Record  : ${BOLD}$NS_DOMAIN${NC}"
-
-# ── 2. Detect Active GCP Project ID (with Compute access) ───
+# ── 1. Detect Active GCP Project ID ─────────────────────────
 banner "Detecting GCP Project"
 
 CURRENT_PROJECT=$(gcloud config get-value project 2>/dev/null || true)
@@ -71,17 +46,27 @@ CURRENT_PROJECT=$(gcloud config get-value project 2>/dev/null || true)
 ALL_PROJECTS=$(gcloud projects list --format="value(projectId)" 2>/dev/null || true)
 PROJECT_ID=""
 
-# Check each available project and pick one where Compute Engine is accessible
-for P in $CURRENT_PROJECT $ALL_PROJECTS; do
+# 1st pass: Pick a project where user has Editor/Owner/Compute Admin role or an existing VM
+for P in $ALL_PROJECTS $CURRENT_PROJECT; do
     [[ -z "$P" ]] && continue
-    gcloud services enable compute.googleapis.com --project="$P" --quiet 2>/dev/null || true
-    if gcloud compute zones list --project="$P" --limit=1 --quiet >/dev/null 2>&1; then
+    ROLES=$(gcloud projects get-iam-policy "$P" --flatten="bindings[].members" --format="value(bindings.role)" 2>/dev/null || true)
+    if echo "$ROLES" | grep -qiE "editor|owner|compute\.admin|compute\.instanceAdmin"; then
         PROJECT_ID="$P"
         break
     fi
 done
 
-# Fallback to first active project if none matched zone check yet
+# 2nd pass: Fallback to any project where compute zones list works
+if [[ -z "$PROJECT_ID" ]]; then
+    for P in $ALL_PROJECTS $CURRENT_PROJECT; do
+        [[ -z "$P" ]] && continue
+        if gcloud compute zones list --project="$P" --limit=1 --quiet >/dev/null 2>&1; then
+            PROJECT_ID="$P"
+            break
+        fi
+    done
+fi
+
 if [[ -z "$PROJECT_ID" ]]; then
     PROJECT_ID=$(echo "$ALL_PROJECTS" | head -n 1)
     [[ -z "$PROJECT_ID" ]] && PROJECT_ID="$CURRENT_PROJECT"
@@ -94,7 +79,7 @@ fi
 gcloud config set project "$PROJECT_ID" --quiet 2>/dev/null || true
 log "GCP Project ID: ${BOLD}$PROJECT_ID${NC}"
 
-# ── 3. Generate dnstt Keys & VLESS UUID ─────────────────────
+# ── 2. Generate dnstt Keys & VLESS UUID ─────────────────────
 banner "Generating SlowDNS Keys & VLESS UUID"
 
 PRIV_FILE="$KEYS_DIR/server.key"
@@ -125,7 +110,7 @@ fi
 V2RAY_PORT=10086
 log "VLESS UUID : ${BOLD}$V2RAY_UUID${NC}"
 
-# ── 4. Save env config ──────────────────────────────────────
+# ── 3. Save env config (NO domain yet!) ─────────────────────
 ENV_FILE="$CONFIG_DIR/env.conf"
 cat > "$ENV_FILE" << EOF
 PROJECT_ID="$PROJECT_ID"
@@ -134,11 +119,6 @@ CONFIG_DIR="$CONFIG_DIR"
 OUTPUT_DIR="$OUTPUT_DIR"
 KEYS_DIR="$KEYS_DIR"
 LOG_FILE="$LOG_FILE"
-USER_DOMAIN="$USER_DOMAIN"
-TUNNEL_DOMAIN="$TUNNEL_DOMAIN"
-NS_DOMAIN="$NS_DOMAIN"
-NS_SUB="$NS_SUB"
-TUNNEL_SUB="$TUNNEL_SUB"
 DNSTT_PRIVKEY="$DNSTT_PRIVKEY"
 DNSTT_PUBKEY="$DNSTT_PUBKEY"
 V2RAY_UUID="$V2RAY_UUID"
