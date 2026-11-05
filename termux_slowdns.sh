@@ -475,6 +475,13 @@ if [[ -f "$CONF_FILE" ]]; then
     source "$CONF_FILE"
 fi
 
+# Always force the permanent keypair & UUID unless explicitly overridden via CLI args $2/$3
+PUBKEY="$DEFAULT_PUBKEY"
+VLESS_UUID="$DEFAULT_UUID"
+if [[ "${TUNNEL_DOMAIN:-}" == "YOUR_NS_DOMAIN" || "${TUNNEL_DOMAIN:-}" == "tunnel2.foridul.pp.ua" ]]; then
+    TUNNEL_DOMAIN="$DEFAULT_DOMAIN"
+fi
+
 # CLI args override: bash termux_slowdns.sh [TUNNEL_DOMAIN] [PUBKEY] [VLESS_UUID] [DNS_TARGET] [LOCAL_PORT]
 if [[ -n "${1:-}" ]]; then
     if [[ ${#1} -eq 64 && "$1" != *.* ]]; then
